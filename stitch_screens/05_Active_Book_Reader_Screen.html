@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0, viewport-fit=cover" name="viewport"/>
+<title>Minimalist Mobile E-Reader</title>
+<!-- Tailwind CSS CDN with plugins -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<!-- Tailwind Configuration for custom fonts and colors -->
+<script data-purpose="tailwind-config">
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            reader: {
+              bg: '#000000',
+              text: '#e2e2e5',
+              muted: '#71717a',
+              card: 'rgba(28, 28, 30, 0.88)'
+            }
+          },
+          fontFamily: {
+            serif: ['Georgia', 'Cambria', '"Times New Roman"', 'Times', 'serif'],
+            sans: ['-apple-system', 'BlinkMacSystemFont', '"SF Pro Display"', '"SF Pro Text"', 'Roboto', 'Helvetica', 'Arial', 'sans-serif']
+          }
+        }
+      }
+    };
+  </script>
+<!-- Custom Styles for typography and glassmorphism overlay -->
+<style data-purpose="typography">
+    .reader-prose {
+      font-feature-settings: "kern" 1, "liga" 1;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+      line-height: 1.72;
+      letter-spacing: -0.011em;
+    }
+  </style>
+<style data-purpose="glassmorphic-blur">
+    .ios-glass {
+      backdrop-filter: blur(28px) saturate(190%);
+      -webkit-backdrop-filter: blur(28px) saturate(190%);
+    }
+  </style>
+</head>
+<body class="bg-black text-[#e2e2e5] font-sans antialiased select-none flex justify-center items-center min-h-screen p-0 m-0">
+<!-- BEGIN: MobileDeviceFrame -->
+<div class="relative w-full max-w-[430px] h-[932px] max-h-screen bg-black overflow-hidden flex flex-col justify-between shadow-2xl" data-purpose="mobile-viewport">
+<!-- BEGIN: TopStatusBar -->
+<!-- iOS native status bar with dynamic island / notch simulation spacing -->
+<header class="w-full pt-3 px-7 flex justify-between items-center z-40 text-white font-semibold text-[15px] tracking-tight" data-purpose="ios-status-bar">
+<!-- Current Time -->
+<span class="font-medium tracking-tight">9:41</span>
+<!-- Status Icons: Cellular, Wi-Fi, Battery -->
+<div class="flex items-center space-x-2 text-white">
+<!-- Cellular Signal Icon -->
+<svg class="w-4 h-3.5 fill-current" viewbox="0 0 17 11">
+<rect height="3" rx="0.5" width="2.5" x="0" y="8"></rect>
+<rect height="5.5" rx="0.5" width="2.5" x="4" y="5.5"></rect>
+<rect height="8" rx="0.5" width="2.5" x="8" y="3"></rect>
+<rect height="10.5" rx="0.5" width="2.5" x="12" y="0.5"></rect>
+</svg>
+<!-- Wi-Fi Icon -->
+<svg class="w-4 h-3.5 fill-current" viewbox="0 0 16 12">
+<path d="M8 9.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm-4-3a5.7 5.7 0 0 1 8 0 .8.8 0 1 1-1.1 1.1 4.1 4.1 0 0 0-5.8 0 .8.8 0 0 1-1.1-1.1zm-3-3a10 10 0 0 1 14 0 .8.8 0 0 1-1.1 1.1 8.4 8.4 0 0 0-11.8 0 .8.8 0 0 1-1.1-1.1z"></path>
+</svg>
+<!-- Battery Icon (with fill & notch) -->
+<div class="flex items-center">
+<div class="w-[22px] h-[11.5px] border-[1.2px] border-white rounded-[3.5px] p-[1.5px] flex items-center">
+<div class="w-full h-full bg-white rounded-[1.5px]"></div>
+</div>
+<div class="w-[1.2px] h-[4.5px] bg-white rounded-r-sm -ml-[0.5px]"></div>
+</div>
+</div>
+</header>
+<!-- END: TopStatusBar -->
+<!-- BEGIN: ReaderTopNavBar -->
+<!-- Top toolbar with page counter and circular close/dismiss action -->
+<nav class="relative w-full px-6 pt-3 pb-2 flex items-center justify-between z-30" data-purpose="reader-header-nav">
+<!-- Empty placeholder for balance alignment -->
+<div class="w-9 h-9"></div>
+<!-- Center Reading Progress Page Status -->
+<span class="text-[13px] text-zinc-500 font-medium tracking-wide">
+        51 of 512
+      </span>
+<!-- Right Dismiss / Close Button -->
+<button aria-label="Close reader" class="w-8 h-8 rounded-full bg-zinc-800/90 text-zinc-300 flex items-center justify-center hover:bg-zinc-700 active:scale-95 transition" type="button">
+<svg class="w-3.5 h-3.5 stroke-[2.5]" fill="none" stroke="currentColor" viewbox="0 0 24 24">
+<path d="M6 18L18 6M6 6l12 12" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</button>
+</nav>
+<!-- END: ReaderTopNavBar -->
+<!-- BEGIN: MainContent -->
+<!-- Elegantly formatted serif book content -->
+<main class="flex-1 overflow-y-auto px-7 pt-4 pb-28 text-left scroll-smooth" data-purpose="reader-content">
+<article class="reader-prose font-serif text-[18.5px] text-[#e2e2e5] space-y-6">
+<p>
+          The essence of the art lies in the quiet perception of the everyday. In the stillness of the tea-room, where shadows converse with the flickering light, one discovers harmony not in grand monumentality, but in the deliberate balance of unadorned space. The masters of the tea ceremony understood that perfection is an illusion; true grace is found in the asymmetrical, the fleeting, and the subtle imperfections that reflect life itself.
+        </p>
+<p>
+          When we attune ourselves to this silent rhythm, the noisy cadence of the world recedes. Every gesture—the lifting of a ceramic bowl, the gentle rustle of bamboo, the aroma of steamed leaves—becomes a contemplation of existence. In simplicity, nothing is trivial; the ordinary object, freed from the burden of display, reveals its inherent dignity and invites the observer into profound communion with time.
+        </p>
+<p class="text-zinc-500/70 select-none">
+          Thus beauty manifests not as an ornament forced upon reality, but as reality unmasked in silence...
+        </p>
+</article>
+</main>
+<!-- END: MainContent -->
+<!-- BEGIN: FloatingControlsAndFooter -->
+<div class="fixed bottom-0 left-0 right-0 w-full max-w-[430px] mx-auto pointer-events-none z-50 flex flex-col items-center" data-purpose="hud-bottom-wrapper">
+<!-- Top mini swipe indicator bar on top of pill HUD -->
+<div class="w-8 h-1 bg-zinc-600/70 rounded-full mb-2 pointer-events-auto"></div>
+<!-- Glassmorphic Floating HUD Navigation Capsule -->
+<div class="pointer-events-auto ios-glass bg-[#1f1f23]/85 border border-white/10 rounded-full w-[90%] max-w-[390px] h-[58px] px-3.5 mb-6 flex items-center justify-between shadow-2xl" data-purpose="floating-pill-hud">
+<!-- Add Note Button (Pill highlight style) -->
+<button aria-label="Add Note" class="flex items-center space-x-1.5 px-3 py-1.5 rounded-full bg-white/10 active:bg-white/20 transition text-[#e2e2e5]" type="button">
+<!-- Note / Edit Icon -->
+<svg class="w-4 h-4 stroke-[1.8]" fill="none" stroke="currentColor" viewbox="0 0 24 24">
+<path d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+<span class="text-[13px] font-medium tracking-tight">Add Note</span>
+</button>
+<!-- Center Reading Percentage -->
+<div class="text-zinc-400 font-medium text-[13.5px]" data-purpose="reading-percentage">
+          9.9%
+        </div>
+<!-- Right Quick Actions: Bookmark and Search/Typography -->
+<div class="flex items-center space-x-4 pr-1">
+<!-- Bookmark Action -->
+<button aria-label="Bookmark page" class="text-zinc-300 hover:text-white active:scale-90 transition p-1" type="button">
+<svg class="w-5 h-5 stroke-[1.8]" fill="none" stroke="currentColor" viewbox="0 0 24 24">
+<path d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</button>
+<!-- Search / Quick Reader Actions Icon -->
+<button aria-label="Search or customize font" class="text-zinc-300 hover:text-white active:scale-90 transition p-1" type="button">
+<svg class="w-5 h-5 stroke-[1.8]" fill="none" stroke="currentColor" viewbox="0 0 24 24">
+<path d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</button>
+</div>
+</div>
+<!-- iOS Home Swipe Bar Indicator -->
+<div class="w-32 h-1 bg-white/70 rounded-full mb-2" data-purpose="home-swipe-indicator"></div>
+</div>
+<!-- END: FloatingControlsAndFooter -->
+</div>
+<!-- END: MobileDeviceFrame -->
+</body></html>

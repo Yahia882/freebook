@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" name="viewport"/>
+<title>Notes Overview</title>
+<!-- Tailwind CSS CDN with forms & container plugins -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            appDark: '#0e0e0e',
+            pillBg: 'rgba(38, 38, 40, 0.72)',
+            pillActive: '#444448',
+          },
+          fontFamily: {
+            sans: ['-apple-system', 'BlinkMacSystemFont', '"SF Pro Display"', '"SF Pro Text"', 'Roboto', 'sans-serif'],
+          }
+        }
+      }
+    };
+  </script>
+<style data-purpose="base-styling">
+    body {
+      background-color: #000000;
+      -webkit-font-smoothing: antialiased;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+  </style>
+<style data-purpose="glassmorphism">
+    .frosted-capsule {
+      background-color: rgba(30, 30, 32, 0.82);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5), inset 0 0.5px 0.5px rgba(255, 255, 255, 0.2);
+    }
+  </style>
+</head>
+<body class="flex items-center justify-center min-h-screen bg-black text-white p-0 sm:p-4">
+<!-- BEGIN: MobileDeviceFrame -->
+<main class="w-full max-w-[390px] h-[844px] bg-[#0d0d0d] flex flex-col relative overflow-hidden sm:rounded-[48px] sm:ring-1 sm:ring-white/10 sm:shadow-2xl" data-purpose="mobile-viewport">
+<!-- BEGIN: StatusBar -->
+<header class="w-full pt-3 pb-2 px-6 flex justify-between items-center text-xs tracking-tight font-medium text-white/90 z-20" data-purpose="status-bar">
+<!-- Left side: Time -->
+<span class="font-semibold text-[14px] tracking-normal">9:41</span>
+<!-- Right side: Indicators -->
+<div class="flex items-center gap-1.5" data-purpose="system-icons">
+<!-- Cellular Icon -->
+<svg class="w-3.5 h-3.5 fill-current" viewbox="0 0 16 16">
+<rect height="4" rx="0.5" width="2" x="1" y="11"></rect>
+<rect height="6.5" rx="0.5" width="2" x="4.5" y="8.5"></rect>
+<rect height="9.5" rx="0.5" width="2" x="8" y="5.5"></rect>
+<rect height="12.5" rx="0.5" width="2" x="11.5" y="2.5"></rect>
+</svg>
+<!-- Wifi Icon -->
+<svg class="w-3.5 h-3.5 fill-current" viewbox="0 0 16 16">
+<path d="M8 12.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm-4.24-2.83a6 6 0 0 1 8.48 0 .75.75 0 0 1-1.06 1.06 4.5 4.5 0 0 0-6.36 0 .75.75 0 0 1-1.06-1.06zm-2.83-2.83a10 10 0 0 1 14.14 0 .75.75 0 1 1-1.06 1.06 8.5 8.5 0 0 0-12.02 0 .75.75 0 0 1-1.06-1.06z"></path>
+</svg>
+<!-- Battery Percentage and Icon -->
+<span class="text-[11px] font-normal mr-0.5">100%</span>
+<div class="w-5 h-2.5 rounded-[3px] border border-white/80 p-0.5 flex items-center relative">
+<div class="h-full w-full bg-white rounded-[1.5px]"></div>
+<div class="absolute -right-1 w-0.5 h-1 bg-white/80 rounded-r-[1px]"></div>
+</div>
+</div>
+</header>
+<!-- END: StatusBar -->
+<!-- BEGIN: TopBar -->
+<nav class="flex items-center justify-between px-6 pt-2 pb-4" data-purpose="top-navigation-bar">
+<!-- Title -->
+<h1 class="text-[20px] font-medium tracking-tight text-white/95">Notes</h1>
+<!-- Action Icons -->
+<div class="flex items-center gap-5 text-white/90">
+<!-- Search Button -->
+<button aria-label="Search" class="p-1 hover:text-white active:opacity-60 transition-opacity" type="button">
+<svg class="w-5 h-5 stroke-current fill-none stroke-[1.8]" viewbox="0 0 24 24">
+<circle cx="11" cy="11" r="7"></circle>
+<line stroke-linecap="round" x1="16.5" x2="21" y1="16.5" y2="21"></line>
+</svg>
+</button>
+<!-- Add Button -->
+<button aria-label="Add note" class="p-1 hover:text-white active:opacity-60 transition-opacity" type="button">
+<svg class="w-5 h-5 stroke-current fill-none stroke-[2]" viewbox="0 0 24 24">
+<line stroke-linecap="round" x1="12" x2="12" y1="5" y2="19"></line>
+<line stroke-linecap="round" x1="5" x2="19" y1="12" y2="12"></line>
+</svg>
+</button>
+<!-- More Options Button -->
+<button aria-label="More options" class="p-1 hover:text-white active:opacity-60 transition-opacity" type="button">
+<svg class="w-5 h-5 fill-current" viewbox="0 0 24 24">
+<circle cx="12" cy="5" r="1.5"></circle>
+<circle cx="12" cy="12" r="1.5"></circle>
+<circle cx="12" cy="19" r="1.5"></circle>
+</svg>
+</button>
+</div>
+</nav>
+<!-- END: TopBar -->
+<!-- BEGIN: NotesList -->
+<section class="flex-1 overflow-y-auto px-5 pt-1 space-y-4" data-purpose="notes-item-list">
+<!-- Book Note Item 1 -->
+<article class="flex items-center gap-4 p-1.5 rounded-xl transition active:bg-white/5 cursor-pointer" data-purpose="book-note-item">
+<!-- Thumbnail Cover -->
+<div class="w-[44px] h-[58px] rounded-[3px] bg-[#e6e5e0] text-[#1c1c1c] flex flex-col justify-between p-1.5 shadow-sm overflow-hidden flex-shrink-0 border border-white/10" data-purpose="book-cover-thumbnail">
+<div class="text-[6px] font-serif leading-[1.1] uppercase tracking-wider font-semibold opacity-90">
+            A Room<br/>Of One's<br/>Own
+          </div>
+<!-- Arch graphic matching original cover -->
+<div class="w-5 h-6 bg-[#1a1a1a] rounded-t-full mx-auto mt-auto"></div>
+<div class="text-[3px] text-center tracking-tighter opacity-60 mt-0.5">VIRGINIA WOOLF</div>
+</div>
+<!-- Book Title -->
+<span class="text-[17px] font-normal text-white/90 tracking-tight">A Room Of One’s Own</span>
+</article>
+<!-- Book Note Item 2 -->
+<article class="flex items-center gap-4 p-1.5 rounded-xl transition active:bg-white/5 cursor-pointer" data-purpose="book-note-item">
+<!-- Thumbnail Cover -->
+<div class="w-[44px] h-[58px] rounded-[3px] bg-[#3a3939] text-[#cfcfcf] flex flex-col justify-between p-1.5 shadow-sm overflow-hidden flex-shrink-0 border border-white/5" data-purpose="book-cover-thumbnail">
+<div class="text-[6.5px] font-serif leading-[1.15] uppercase tracking-wider font-medium opacity-85">
+            The<br/>Book<br/>Of Tea
+          </div>
+<!-- Oval loop graphic matching original cover -->
+<div class="w-6 h-3 rounded-full border border-[#8c8c8c] mx-auto my-auto opacity-70"></div>
+<div class="text-[3px] text-center tracking-tighter opacity-50">KAKUZO OKAKURA</div>
+</div>
+<!-- Book Title -->
+<span class="text-[17px] font-normal text-white/90 tracking-tight">The Book Of Tea</span>
+</article>
+</section>
+<!-- END: NotesList -->
+<!-- BEGIN: FloatingBottomNavigation -->
+<div class="absolute bottom-7 left-0 right-0 flex justify-center items-center pointer-events-none z-30" data-purpose="bottom-nav-container">
+<nav aria-label="Bottom Navigation" class="frosted-capsule pointer-events-auto flex items-center p-1.5 rounded-full border border-white/15 gap-1.5" data-purpose="floating-pill-menu">
+<!-- Library Tab (Inactive) -->
+<button aria-label="Go to Library" class="flex flex-col items-center justify-center w-[78px] h-[56px] rounded-full text-white/60 hover:text-white/80 active:scale-95 transition-all" type="button">
+<svg class="w-5 h-5 stroke-current fill-none stroke-[1.8] mb-1" viewbox="0 0 24 24">
+<path d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+<span class="text-[11px] font-medium tracking-tight">Library</span>
+</button>
+<!-- Notes Tab (Active Highlight Capsule) -->
+<button aria-label="Current tab: Notes" class="flex flex-col items-center justify-center w-[84px] h-[56px] rounded-full bg-[#464649] text-white shadow-inner active:scale-95 transition-all" type="button">
+<!-- Note / Edit Pencil Icon -->
+<svg class="w-5 h-5 stroke-current fill-none stroke-[1.8] mb-1" viewbox="0 0 24 24">
+<path d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L6.832 19.82a4.5 4.5 0 01-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 011.13-1.897L16.863 4.487zm0 0L19.5 7.125" stroke-linecap="round" stroke-linejoin="round"></path>
+<path d="M19 14v5a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h5" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+<span class="text-[11px] font-medium tracking-tight">Notes</span>
+</button>
+</nav>
+</div>
+<!-- END: FloatingBottomNavigation -->
+<!-- BEGIN: HomeIndicator -->
+<div class="w-full flex justify-center pb-2 pt-1 pointer-events-none z-40" data-purpose="home-indicator-container">
+<div class="w-[134px] h-[4.5px] bg-white/70 rounded-full" data-purpose="ios-home-indicator"></div>
+</div>
+<!-- END: HomeIndicator -->
+</main>
+<!-- END: MobileDeviceFrame -->
+</body></html>

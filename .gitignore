@@ -1,0 +1,37 @@
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# --- Added comprehensive Android ignores ---
+
+# Build Artifacts
+*.apk
+*.ap_
+*.aab
+*.aar
+*.dex
+*.class
+out/
+
+# Keystore files
+*.jks
+*.keystore
+
+# Google Services (e.g. Firebase)
+google-services.json
+GoogleService-Info.plist
+
+# Secrets
+secrets.properties
