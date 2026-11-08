@@ -24,7 +24,8 @@ data class BookFreePalette(
     val dockTabActiveText: Color,
     val dockTabInactiveText: Color,
     val highlightMarkerBg: Color,
-    val menuSurface: Color
+    val menuSurface: Color,
+    val glassBackground: Color
 )
 
 val DarkBookFreePalette = BookFreePalette(
@@ -46,7 +47,8 @@ val DarkBookFreePalette = BookFreePalette(
     dockTabActiveText = Color(0xFFFFFFFF),
     dockTabInactiveText = Color(0x99FFFFFF),
     highlightMarkerBg = Color(0x38FACC15),
-    menuSurface = Color(0xFF1E1E22)
+    menuSurface = Color(0xFF1E1E22),
+    glassBackground = Color(0xCC1F1F23)
 )
 
 val LightBookFreePalette = BookFreePalette(
@@ -62,13 +64,14 @@ val LightBookFreePalette = BookFreePalette(
     pillSelectedBg = Color(0xFF18181B),
     pillSelectedBorder = Color(0xFF18181B),
     pillUnselectedBorder = Color(0xFFD4D4D8),
-    dockBackground = Color(0xEBFFFFFF),
+    dockBackground = Color(0x99FFFFFF),
     dockBorder = Color(0x1F000000),
     dockTabActiveBg = Color(0xFF18181B),
     dockTabActiveText = Color(0xFFFFFFFF),
     dockTabInactiveText = Color(0x9918181B),
     highlightMarkerBg = Color(0x55FDE047),
-    menuSurface = Color(0xFFFFFFFF)
+    menuSurface = Color(0xFFFFFFFF),
+    glassBackground = Color(0x99FFFFFF)
 )
 
 val LocalBookFreePalette = staticCompositionLocalOf { DarkBookFreePalette }

@@ -10,26 +10,33 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import com.example.freebook.data.BookRepository
-import com.example.freebook.data.EpubParser
-import com.example.freebook. data.PersistedAppState
-import com.example.freebook.model.AnnotationType
-import com.example.freebook.model.Book
-import com.example.freebook.model.BookAnnotation
-import com.example.freebook.model.CoverStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.freebook.ui.BookFreeViewModel
 import com.example.freebook.ui.screens.AboutScreen
 import com.example.freebook.ui.screens.BookNotesDetailScreen
 import com.example.freebook.ui.screens.BookReaderScreen
@@ -37,9 +44,6 @@ import com.example.freebook.ui.screens.LibraryScreen
 import com.example.freebook.ui.screens.NotesListScreen
 import com.example.freebook.ui.theme.FreebookTheme
 import com.example.freebook.ui.theme.LocalBookFreePalette
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 sealed interface ScreenDestination {
     data object Library : ScreenDestination
@@ -48,6 +52,47 @@ sealed interface ScreenDestination {
     data class BookReader(val bookId: String) : ScreenDestination
     data class About(val previous: ScreenDestination) : ScreenDestination
 }
+
+private val ScreenDestinationSaver: Saver<ScreenDestination, List<String>> = Saver(
+    save = { dest ->
+        when (dest) {
+            ScreenDestination.Library -> listOf("Library")
+            ScreenDestination.NotesList -> listOf("NotesList")
+            is ScreenDestination.BookNotesDetail -> listOf("BookNotesDetail", dest.bookId)
+            is ScreenDestination.BookReader -> listOf("BookReader", dest.bookId)
+            is ScreenDestination.About -> {
+                val prevKey = when (val p = dest.previous) {
+                    ScreenDestination.Library -> "Library"
+                    ScreenDestination.NotesList -> "NotesList"
+                    is ScreenDestination.BookNotesDetail -> "BookNotesDetail:${p.bookId}"
+                    is ScreenDestination.BookReader -> "BookReader:${p.bookId}"
+                    is ScreenDestination.About -> "Library"
+                }
+                listOf("About", prevKey)
+            }
+        }
+    },
+    restore = { saved ->
+        when (saved.firstOrNull()) {
+            "NotesList" -> ScreenDestination.NotesList
+            "BookNotesDetail" -> ScreenDestination.BookNotesDetail(saved.getOrElse(1) { "" })
+            "BookReader" -> ScreenDestination.BookReader(saved.getOrElse(1) { "" })
+            "About" -> {
+                val rawPrev = saved.getOrElse(1) { "Library" }
+                val prev = when {
+                    rawPrev == "NotesList" -> ScreenDestination.NotesList
+                    rawPrev.startsWith("BookNotesDetail:") ->
+                        ScreenDestination.BookNotesDetail(rawPrev.substringAfter(':'))
+                    rawPrev.startsWith("BookReader:") ->
+                        ScreenDestination.BookReader(rawPrev.substringAfter(':'))
+                    else -> ScreenDestination.Library
+                }
+                ScreenDestination.About(prev)
+            }
+            else -> ScreenDestination.Library
+        }
+    }
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -60,39 +105,26 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun BookFreeApp() {
+fun BookFreeApp(
+    viewModel: BookFreeViewModel = viewModel(factory = BookFreeViewModel.Factory)
+) {
     val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
-    val initialState = remember { BookRepository.loadState(context) }
-    var isDarkTheme by remember { mutableStateOf(initialState.isDarkTheme) }
-    var books by remember { mutableStateOf(initialState.books) }
-    var annotations by remember { mutableStateOf(initialState.annotations) }
-    var currentScreen by remember { mutableStateOf<ScreenDestination>(ScreenDestination.Library) }
-    var pendingCustomCoverPath by remember { mutableStateOf<String?>(null) }
+    var currentScreen by rememberSaveable(stateSaver = ScreenDestinationSaver) {
+        mutableStateOf<ScreenDestination>(ScreenDestination.Library)
+    }
 
-    fun persist(
-        newDark: Boolean = isDarkTheme,
-        newBooks: List<Book> = books,
-        newAnnotations: List<BookAnnotation> = annotations
-    ) {
-        isDarkTheme = newDark
-        books = newBooks
-        annotations = newAnnotations
-        coroutineScope.launch(Dispatchers.IO) {
-            BookRepository.saveState(
-                context,
-                PersistedAppState(
-                    isDarkTheme = newDark,
-                    books = newBooks,
-                    annotations = newAnnotations
-                )
-            )
+    LaunchedEffect(uiState.toastMessage) {
+        val msg = uiState.toastMessage
+        if (!msg.isNullOrBlank()) {
+            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+            viewModel.consumeToastMessage()
         }
     }
 
-    // EPUB Document Picker Launcher for Library '+' button
-    val epubPickerLauncher = rememberLauncherForActivityResult(
+    // Document Picker Launcher for EPUB / PDF / TXT books
+    val bookPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
@@ -103,45 +135,19 @@ fun BookFreeApp() {
                 )
             } catch (_: Exception) {
             }
-
-            coroutineScope.launch {
-                val importedBook = withContext(Dispatchers.IO) {
-                    EpubParser.parseEpubFromUri(context, uri)
-                }
-                if (importedBook != null) {
-                    val updatedBooks = listOf(importedBook) + books
-                    persist(newBooks = updatedBooks)
-                    Toast.makeText(
-                        context,
-                        "Imported \"${importedBook.title}\" (${importedBook.pages.size} pages) & synced with Notes",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                } else {
-                    Toast.makeText(
-                        context,
-                        "Could not read the selected EPUB file",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-            }
+            viewModel.importBook(context, uri)
         }
     }
 
-    // Cover Image Picker Launcher for Notes '+' custom book note entry dialog
+    // Cover Image Picker Launcher for Custom Book Note Entry dialog
     val coverImagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
         if (uri != null) {
-            coroutineScope.launch {
-                val savedPath = withContext(Dispatchers.IO) {
-                    EpubParser.copyCustomCoverImage(context, uri)
-                }
-                pendingCustomCoverPath = savedPath
-            }
+            viewModel.pickCustomCoverImage(context, uri)
         }
     }
 
-    // Handle system Back button
     BackHandler(enabled = currentScreen != ScreenDestination.Library) {
         currentScreen = when (val dest = currentScreen) {
             is ScreenDestination.About -> dest.previous
@@ -151,6 +157,10 @@ fun BookFreeApp() {
             ScreenDestination.Library -> ScreenDestination.Library
         }
     }
+
+    val isDarkTheme = uiState.preferences.isDarkTheme
+    val fontSizeSp = uiState.preferences.fontSizeSp
+    val enablePageAnimations = uiState.preferences.enablePageAnimations
 
     FreebookTheme(darkTheme = isDarkTheme) {
         val palette = LocalBookFreePalette.current
@@ -170,24 +180,31 @@ fun BookFreeApp() {
             when (val dest = currentScreen) {
                 ScreenDestination.Library -> {
                     LibraryScreen(
-                        books = books,
+                        books = uiState.books,
                         isDarkTheme = isDarkTheme,
-                        onToggleTheme = { newDark -> persist(newDark = newDark) },
+                        enablePageAnimations = enablePageAnimations,
+                        onToggleTheme = { viewModel.setDarkTheme(it) },
+                        onTogglePageAnimations = { viewModel.setEnablePageAnimations(it) },
                         onOpenAbout = {
                             currentScreen = ScreenDestination.About(ScreenDestination.Library)
                         },
                         onImportEpubClick = {
-                            epubPickerLauncher.launch(
-                                arrayOf("application/epub+zip", "application/octet-stream", "text/plain", "*/*")
+                            bookPickerLauncher.launch(
+                                arrayOf(
+                                    "application/epub+zip",
+                                    "application/pdf",
+                                    "text/plain",
+                                    "application/octet-stream",
+                                    "*/*"
+                                )
                             )
                         },
                         onBookClick = { clickedBook ->
-                            // Mark book as started when opened
-                            val updatedBooks = books.map { b ->
-                                if (b.id == clickedBook.id) b.copy(isStarted = true) else b
-                            }
-                            persist(newBooks = updatedBooks)
+                            viewModel.markBookStarted(clickedBook)
                             currentScreen = ScreenDestination.BookReader(clickedBook.id)
+                        },
+                        onDeleteBook = { bookToDelete ->
+                            viewModel.deleteBook(bookToDelete)
                         },
                         onNavigateToNotes = {
                             currentScreen = ScreenDestination.NotesList
@@ -197,38 +214,28 @@ fun BookFreeApp() {
 
                 ScreenDestination.NotesList -> {
                     NotesListScreen(
-                        books = books,
-                        annotations = annotations,
+                        books = uiState.books,
+                        annotations = uiState.annotations,
                         isDarkTheme = isDarkTheme,
-                        pendingCustomCoverPath = pendingCustomCoverPath,
-                        onClearPendingCustomCover = { pendingCustomCoverPath = null },
+                        enablePageAnimations = enablePageAnimations,
+                        pendingCustomCoverPath = uiState.pendingCustomCoverPath,
+                        onClearPendingCustomCover = { viewModel.clearPendingCustomCover() },
                         onPickCustomCoverImage = {
                             coverImagePickerLauncher.launch("image/*")
                         },
-                        onAddCustomBookNoteEntry = { title, author, coverPath, coverStyle ->
-                            val newBookEntry = Book(
-                                title = title,
-                                author = author,
-                                coverStyle = coverStyle,
-                                coverImagePath = coverPath,
-                                pages = listOf("Notes notebook for $title"),
-                                isCustomNoteEntryOnly = true
-                            )
-                            val updatedBooks = listOf(newBookEntry) + books
-                            persist(newBooks = updatedBooks)
-                            pendingCustomCoverPath = null
-                            Toast.makeText(
-                                context,
-                                "Added \"$title\" to Notes",
-                                Toast.LENGTH_SHORT
-                            ).show()
+                        onAddCustomBookNoteEntry = { title, author, coverPath ->
+                            viewModel.addCustomNoteNotebook(title, author, coverPath)
                         },
-                        onToggleTheme = { newDark -> persist(newDark = newDark) },
+                        onToggleTheme = { viewModel.setDarkTheme(it) },
+                        onTogglePageAnimations = { viewModel.setEnablePageAnimations(it) },
                         onOpenAbout = {
                             currentScreen = ScreenDestination.About(ScreenDestination.NotesList)
                         },
                         onBookNoteClick = { book ->
                             currentScreen = ScreenDestination.BookNotesDetail(book.id)
+                        },
+                        onDeleteBook = { bookToDelete ->
+                            viewModel.deleteBook(bookToDelete)
                         },
                         onNavigateToLibrary = {
                             currentScreen = ScreenDestination.Library
@@ -237,27 +244,30 @@ fun BookFreeApp() {
                 }
 
                 is ScreenDestination.BookNotesDetail -> {
-                    val book = books.find { it.id == dest.bookId }
+                    val book = uiState.books.find { it.id == dest.bookId }
                     if (book == null) {
                         currentScreen = ScreenDestination.NotesList
                     } else {
-                        val bookAnnotations = annotations.filter { it.bookId == book.id }
+                        val bookAnnotations = uiState.annotations.filter { it.bookId == book.id }
                         BookNotesDetailScreen(
                             book = book,
                             annotations = bookAnnotations,
                             isDarkTheme = isDarkTheme,
+                            enablePageAnimations = enablePageAnimations,
                             onBack = { currentScreen = ScreenDestination.NotesList },
                             onAddAnnotation = { type, pageNum, text ->
-                                val newAnnotation = BookAnnotation(
+                                viewModel.addAnnotation(
                                     bookId = book.id,
                                     type = type,
                                     pageNumber = pageNum,
-                                    text = text,
-                                    timestampLabel = "Added today"
+                                    text = text
                                 )
-                                persist(newAnnotations = annotations + newAnnotation)
                             },
-                            onToggleTheme = { newDark -> persist(newDark = newDark) },
+                            onDeleteAnnotation = { annotation ->
+                                viewModel.deleteAnnotation(annotation)
+                            },
+                            onToggleTheme = { viewModel.setDarkTheme(it) },
+                            onTogglePageAnimations = { viewModel.setEnablePageAnimations(it) },
                             onOpenAbout = {
                                 currentScreen = ScreenDestination.About(dest)
                             },
@@ -272,46 +282,38 @@ fun BookFreeApp() {
                 }
 
                 is ScreenDestination.BookReader -> {
-                    val book = books.find { it.id == dest.bookId }
+                    val book = uiState.books.find { it.id == dest.bookId }
                     if (book == null) {
                         currentScreen = ScreenDestination.Library
                     } else {
-                        val bookAnnotations = annotations.filter { it.bookId == book.id }
+                        val bookAnnotations = uiState.annotations.filter { it.bookId == book.id }
                         BookReaderScreen(
                             book = book,
                             bookAnnotations = bookAnnotations,
-                            onPageChanged = { newPageIdx ->
-                                if (newPageIdx != book.currentPageIndex || !book.isStarted) {
-                                    val reachedEnd = newPageIdx >= book.pages.size - 1 && book.pages.size > 1
-                                    val updatedBooks = books.map { b ->
-                                        if (b.id == book.id) {
-                                            b.copy(
-                                                currentPageIndex = newPageIdx,
-                                                isStarted = true,
-                                                isFinished = b.isFinished || reachedEnd,
-                                                fixedProgressPercent = if (newPageIdx == 0) b.fixedProgressPercent else null
-                                            )
-                                        } else {
-                                            b
-                                        }
-                                    }
-                                    persist(newBooks = updatedBooks)
-                                }
+                            fontSizeSp = fontSizeSp,
+                            enablePageAnimations = enablePageAnimations,
+                            loadBookText = { targetBook -> viewModel.loadBookText(targetBook) },
+                            onFontSizeChange = { newSize -> viewModel.setFontSizeSp(newSize) },
+                            onPageChanged = { charOffset, totalChars, pageIndex, pageCount ->
+                                viewModel.updateReadingProgress(
+                                    bookId = book.id,
+                                    charOffset = charOffset,
+                                    totalChars = totalChars,
+                                    pageIndex = pageIndex,
+                                    pageCount = pageCount
+                                )
                             },
                             onAddAnnotation = { type, pageNumber, text ->
-                                val newAnnotation = BookAnnotation(
+                                viewModel.addAnnotation(
                                     bookId = book.id,
                                     type = type,
                                     pageNumber = pageNumber,
                                     text = text,
-                                    timestampLabel = "Added today"
+                                    showToast = true
                                 )
-                                persist(newAnnotations = annotations + newAnnotation)
-                                Toast.makeText(
-                                    context,
-                                    "${if (type == AnnotationType.HIGHLIGHT) "Highlight" else "Note"} synced to Notes (Page $pageNumber)",
-                                    Toast.LENGTH_SHORT
-                                ).show()
+                            },
+                            onDeleteAnnotation = { annotation ->
+                                viewModel.deleteAnnotation(annotation)
                             },
                             onCloseReader = {
                                 currentScreen = ScreenDestination.Library
@@ -326,6 +328,65 @@ fun BookFreeApp() {
                     )
                 }
             }
+        }
+
+        // Fuzzy Duplicate Warning + Confirmation Dialog
+        uiState.pendingFuzzyDuplicate?.let { fuzzyDuplicate ->
+            AlertDialog(
+                onDismissRequest = { viewModel.dismissFuzzyDuplicateImport() },
+                containerColor = palette.menuSurface,
+                titleContentColor = palette.textPrimary,
+                textContentColor = palette.textPrimary,
+                title = {
+                    Text(
+                        text = "Similar Book Already in Library",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = fuzzyDuplicate.reason,
+                            fontSize = 14.sp,
+                            color = palette.textSecondary
+                        )
+                        Text(
+                            text = "Existing: \"${fuzzyDuplicate.existingBook.title}\" by ${fuzzyDuplicate.existingBook.author}",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = palette.textPrimary
+                        )
+                        Text(
+                            text = "New Import: \"${fuzzyDuplicate.stagedImport.title}\" by ${fuzzyDuplicate.stagedImport.author}",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = palette.textPrimary
+                        )
+                        Text(
+                            text = "Would you like to keep both editions in your library?",
+                            fontSize = 13.sp,
+                            color = palette.textMuted
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = { viewModel.confirmFuzzyDuplicateImport() },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = palette.textPrimary,
+                            contentColor = palette.appBackground
+                        )
+                    ) {
+                        Text("Import Anyway", fontWeight = FontWeight.SemiBold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { viewModel.dismissFuzzyDuplicateImport() }) {
+                        Text("Discard", color = palette.textMuted)
+                    }
+                }
+            )
         }
     }
 }

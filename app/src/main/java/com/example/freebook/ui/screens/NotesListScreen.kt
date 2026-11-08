@@ -1,9 +1,11 @@
 package com.example.freebook.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -32,6 +35,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -45,7 +49,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.freebook.model.Book
 import com.example.freebook.model.BookAnnotation
-import com.example.freebook.model.CoverStyle
 import com.example.freebook.ui.components.BookCoverView
 import com.example.freebook.ui.components.BottomNavTab
 import com.example.freebook.ui.components.CloseCrossIcon
@@ -55,25 +58,32 @@ import com.example.freebook.ui.components.SearchVectorIcon
 import com.example.freebook.ui.components.TopBarMoreMenuButton
 import com.example.freebook.ui.theme.LocalBookFreePalette
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun NotesListScreen(
     books: List<Book>,
     annotations: List<BookAnnotation>,
     isDarkTheme: Boolean,
+    enablePageAnimations: Boolean,
     pendingCustomCoverPath: String?,
     onClearPendingCustomCover: () -> Unit,
     onPickCustomCoverImage: () -> Unit,
-    onAddCustomBookNoteEntry: (title: String, author: String, coverImagePath: String?, coverStyle: CoverStyle) -> Unit,
+    onAddCustomBookNoteEntry: (title: String, author: String, coverImagePath: String?) -> Unit,
     onToggleTheme: (Boolean) -> Unit,
+    onTogglePageAnimations: (Boolean) -> Unit,
     onOpenAbout: () -> Unit,
     onBookNoteClick: (Book) -> Unit,
+    onDeleteBook: (Book) -> Unit,
     onNavigateToLibrary: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalBookFreePalette.current
-    var isSearchActive by remember { mutableStateOf(false) }
-    var searchQuery by remember { mutableStateOf("") }
-    var showAddBookNoteDialog by remember { mutableStateOf(false) }
+    var isSearchActive by rememberSaveable { mutableStateOf(false) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var showAddBookNoteDialog by rememberSaveable { mutableStateOf(false) }
+    var bookPendingDelete by remember { mutableStateOf<Book?>(null) }
+
+    val listState = rememberLazyListState()
 
     val annotationsByBook = remember(annotations) {
         annotations.groupBy { it.bookId }
@@ -126,7 +136,6 @@ fun NotesListScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // Search Notes Button
                     Box(
                         modifier = Modifier
                             .size(36.dp)
@@ -141,7 +150,6 @@ fun NotesListScreen(
                         SearchVectorIcon(color = palette.textPrimary, size = 20.dp)
                     }
 
-                    // + Button: Add a new book note entry with customized name and custom/default cover
                     Box(
                         modifier = Modifier
                             .size(36.dp)
@@ -155,11 +163,12 @@ fun NotesListScreen(
                         PlusVectorIcon(color = palette.textPrimary, size = 21.dp)
                     }
 
-                    // More Options (⋮) Button: 1- Theme (Dark or Light), 2- About
                     TopBarMoreMenuButton(
                         isDarkTheme = isDarkTheme,
                         onToggleTheme = onToggleTheme,
-                        onOpenAbout = onOpenAbout
+                        onOpenAbout = onOpenAbout,
+                        enablePageAnimations = enablePageAnimations,
+                        onTogglePageAnimations = onTogglePageAnimations
                     )
                 }
             }
@@ -236,7 +245,7 @@ fun NotesListScreen(
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "Tap + to add a custom book note entry",
+                            text = "Tap + to add a custom book note entry or import a book",
                             color = palette.textMuted.copy(alpha = 0.7f),
                             fontSize = 13.sp
                         )
@@ -244,23 +253,30 @@ fun NotesListScreen(
                 }
             } else {
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f),
                     contentPadding = PaddingValues(top = 4.dp, bottom = 110.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    items(filteredBookEntries, key = { it.id }) { book ->
+                    items(
+                        items = filteredBookEntries,
+                        key = { it.id },
+                        contentType = { "book_note_row" }
+                    ) { book ->
                         val bookNotes = annotationsByBook[book.id].orEmpty()
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
-                                .clickable { onBookNoteClick(book) }
+                                .combinedClickable(
+                                    onClick = { onBookNoteClick(book) },
+                                    onLongClick = { bookPendingDelete = book }
+                                )
                                 .padding(vertical = 6.dp, horizontal = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            // Thumbnail Cover (44dp x 58dp matching Stitch spec)
                             BookCoverView(
                                 book = book,
                                 isThumbnail = true,
@@ -280,14 +296,12 @@ fun NotesListScreen(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
-                                if (bookNotes.isNotEmpty() || searchQuery.isNotBlank()) {
-                                    Spacer(modifier = Modifier.height(2.dp))
-                                    Text(
-                                        text = "${bookNotes.size} ${if (bookNotes.size == 1) "entry" else "entries"}",
-                                        fontSize = 12.sp,
-                                        color = palette.textMuted
-                                    )
-                                }
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "${bookNotes.size} ${if (bookNotes.size == 1) "entry" else "entries"}",
+                                    fontSize = 12.sp,
+                                    color = palette.textMuted
+                                )
                             }
                         }
                     }
@@ -309,19 +323,18 @@ fun NotesListScreen(
         )
     }
 
-    // Dialog to add a new Book Note Entry with customized name and custom or default book cover
+    // Dialog to add a new Book Note Entry with unified default/custom cover
     if (showAddBookNoteDialog) {
-        var customBookName by remember { mutableStateOf("") }
-        var customAuthorName by remember { mutableStateOf("") }
-        var selectedStyle by remember { mutableStateOf(CoverStyle.DEFAULT_EDITORIAL) }
+        var customBookName by rememberSaveable { mutableStateOf("") }
+        var customAuthorName by rememberSaveable { mutableStateOf("") }
 
-        val previewBook = Book(
-            title = customBookName.ifBlank { "Book Title" },
-            author = customAuthorName.ifBlank { "Custom Notes" },
-            coverStyle = selectedStyle,
-            coverImagePath = pendingCustomCoverPath,
-            pages = listOf("")
-        )
+        val previewBook = remember(customBookName, customAuthorName, pendingCustomCoverPath) {
+            Book(
+                title = customBookName.ifBlank { "Book Title" },
+                author = customAuthorName.ifBlank { "Custom Notes" },
+                coverImagePath = pendingCustomCoverPath
+            )
+        }
 
         AlertDialog(
             onDismissRequest = {
@@ -382,7 +395,7 @@ fun NotesListScreen(
                                 text = if (pendingCustomCoverPath != null) {
                                     "Custom Cover Selected"
                                 } else {
-                                    "Default Cover Applied"
+                                    "Unified Editorial Cover"
                                 },
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Medium,
@@ -401,43 +414,12 @@ fun NotesListScreen(
                             }
 
                             if (pendingCustomCoverPath != null) {
-                                TextButton(
-                                    onClick = onClearPendingCustomCover
-                                ) {
+                                TextButton(onClick = onClearPendingCustomCover) {
                                     Text(
                                         text = "Use Default Cover",
                                         fontSize = 12.sp,
                                         color = palette.textMuted
                                     )
-                                }
-                            } else {
-                                // Quick style selector for default covers
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    val styles = listOf(
-                                        CoverStyle.DEFAULT_EDITORIAL to "Classic",
-                                        CoverStyle.ARCH_LIGHT to "Arch",
-                                        CoverStyle.OVAL_DARK to "Dark"
-                                    )
-                                    styles.forEach { (style, label) ->
-                                        val isPicked = selectedStyle == style
-                                        Box(
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(8.dp))
-                                                .background(if (isPicked) palette.dockTabActiveBg else Color.Transparent)
-                                                .border(1.dp, palette.borderSubtle, RoundedCornerShape(8.dp))
-                                                .clickable { selectedStyle = style }
-                                                .padding(horizontal = 8.dp, vertical = 4.dp)
-                                        ) {
-                                            Text(
-                                                text = label,
-                                                fontSize = 10.sp,
-                                                color = if (isPicked) Color.White else palette.textMuted
-                                            )
-                                        }
-                                    }
                                 }
                             }
                         }
@@ -452,8 +434,7 @@ fun NotesListScreen(
                         onAddCustomBookNoteEntry(
                             finalTitle,
                             finalAuthor,
-                            pendingCustomCoverPath,
-                            selectedStyle
+                            pendingCustomCoverPath
                         )
                         showAddBookNoteDialog = false
                     },
@@ -472,6 +453,50 @@ fun NotesListScreen(
                         onClearPendingCustomCover()
                     }
                 ) {
+                    Text("Cancel", color = palette.textMuted)
+                }
+            }
+        )
+    }
+
+    // Long-press Delete Book / Note Entry Confirmation Dialog
+    bookPendingDelete?.let { targetBook ->
+        AlertDialog(
+            onDismissRequest = { bookPendingDelete = null },
+            containerColor = palette.menuSurface,
+            titleContentColor = palette.textPrimary,
+            textContentColor = palette.textPrimary,
+            title = {
+                Text(
+                    text = if (targetBook.isCustomNoteEntryOnly) "Delete Note Entry" else "Delete Book & Notes",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            },
+            text = {
+                Text(
+                    text = "Delete \"${targetBook.title}\" and all its notes and highlights?",
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                    color = palette.textSecondary
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDeleteBook(targetBook)
+                        bookPendingDelete = null
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFDC2626),
+                        contentColor = Color.White
+                    )
+                ) {
+                    Text("Delete", fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { bookPendingDelete = null }) {
                     Text("Cancel", color = palette.textMuted)
                 }
             }

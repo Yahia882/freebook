@@ -1,9 +1,11 @@
 package com.example.freebook.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,17 +18,24 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,7 +44,9 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -50,29 +61,42 @@ import com.example.freebook.ui.components.SearchVectorIcon
 import com.example.freebook.ui.components.TopBarMoreMenuButton
 import com.example.freebook.ui.theme.LocalBookFreePalette
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun LibraryScreen(
     books: List<Book>,
     isDarkTheme: Boolean,
+    enablePageAnimations: Boolean,
     onToggleTheme: (Boolean) -> Unit,
+    onTogglePageAnimations: (Boolean) -> Unit,
     onOpenAbout: () -> Unit,
     onImportEpubClick: () -> Unit,
     onBookClick: (Book) -> Unit,
+    onDeleteBook: (Book) -> Unit,
     onNavigateToNotes: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalBookFreePalette.current
-    var selectedFilter by remember { mutableStateOf(LibraryFilter.ALL) }
-    var isSearchActive by remember { mutableStateOf(false) }
-    var searchQuery by remember { mutableStateOf("") }
+    var selectedFilterName by rememberSaveable { mutableStateOf(LibraryFilter.ALL.name) }
+    val selectedFilter = remember(selectedFilterName) {
+        runCatching { LibraryFilter.valueOf(selectedFilterName) }.getOrDefault(LibraryFilter.ALL)
+    }
+    var isSearchActive by rememberSaveable { mutableStateOf(false) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var bookPendingDelete by remember { mutableStateOf<Book?>(null) }
 
-    val libraryBooks = remember(books, selectedFilter, searchQuery) {
-        books
-            .filter { !it.isCustomNoteEntryOnly }
+    val gridState = rememberLazyGridState()
+
+    val allLibraryBooks = remember(books) {
+        books.filter { !it.isCustomNoteEntryOnly }
+    }
+
+    val libraryBooks = remember(allLibraryBooks, selectedFilter, searchQuery) {
+        allLibraryBooks
             .filter { book ->
                 when (selectedFilter) {
                     LibraryFilter.ALL -> true
-                    LibraryFilter.CONTINUE -> !book.isFinished && (book.isStarted || book.fixedProgressPercent != null || book.currentPageIndex > 0)
+                    LibraryFilter.CONTINUE -> !book.isFinished && (book.isStarted || book.readingProgress > 0f || book.currentPageIndex > 0)
                     LibraryFilter.FINISHED -> book.isFinished
                 }
             }
@@ -80,8 +104,9 @@ fun LibraryScreen(
                 if (searchQuery.isBlank()) {
                     true
                 } else {
-                    book.title.contains(searchQuery.trim(), ignoreCase = true) ||
-                        book.author.contains(searchQuery.trim(), ignoreCase = true)
+                    val q = searchQuery.trim()
+                    book.title.contains(q, ignoreCase = true) ||
+                        book.author.contains(q, ignoreCase = true)
                 }
             }
     }
@@ -98,7 +123,7 @@ fun LibraryScreen(
         ) {
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Top Bar: Title + Search, Add (+ EPUB), More Options (⋮)
+            // Top Bar: Title + Search, Add (+ Book), More Options (⋮)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -117,7 +142,6 @@ fun LibraryScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // Search Books Button
                     Box(
                         modifier = Modifier
                             .size(36.dp)
@@ -132,7 +156,6 @@ fun LibraryScreen(
                         SearchVectorIcon(color = palette.textPrimary, size = 21.dp)
                     }
 
-                    // + Button to Import EPUB
                     Box(
                         modifier = Modifier
                             .size(36.dp)
@@ -143,11 +166,12 @@ fun LibraryScreen(
                         PlusVectorIcon(color = palette.textPrimary, size = 23.dp)
                     }
 
-                    // More Options (⋮) Button: 1- Theme (Dark or Light), 2- About
                     TopBarMoreMenuButton(
                         isDarkTheme = isDarkTheme,
                         onToggleTheme = onToggleTheme,
-                        onOpenAbout = onOpenAbout
+                        onOpenAbout = onOpenAbout,
+                        enablePageAnimations = enablePageAnimations,
+                        onTogglePageAnimations = onTogglePageAnimations
                     )
                 }
             }
@@ -205,44 +229,114 @@ fun LibraryScreen(
             }
 
             // Filter Pills: All, Continue, Finished
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 22.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                LibraryFilter.entries.forEach { filter ->
-                    val selected = selectedFilter == filter
-                    Box(
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .background(if (selected) palette.pillSelectedBg else Color.Transparent)
-                            .border(
-                                width = 1.dp,
-                                color = if (selected) palette.pillSelectedBorder else palette.pillUnselectedBorder,
-                                shape = CircleShape
+            if (allLibraryBooks.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 22.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    LibraryFilter.entries.forEach { filter ->
+                        val selected = selectedFilter == filter
+                        Box(
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(if (selected) palette.pillSelectedBg else Color.Transparent)
+                                .border(
+                                    width = 1.dp,
+                                    color = if (selected) palette.pillSelectedBorder else palette.pillUnselectedBorder,
+                                    shape = CircleShape
+                                )
+                                .clickable { selectedFilterName = filter.name }
+                                .padding(horizontal = 16.dp, vertical = 7.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = filter.label,
+                                fontSize = 12.sp,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                color = if (selected) {
+                                    Color.White
+                                } else {
+                                    palette.textPrimary.copy(alpha = 0.6f)
+                                }
                             )
-                            .clickable { selectedFilter = filter }
-                            .padding(horizontal = 16.dp, vertical = 7.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = filter.label,
-                            fontSize = 12.sp,
-                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                            color = if (selected) {
-                                Color.White
-                            } else {
-                                palette.textPrimary.copy(alpha = 0.6f)
-                            }
-                        )
+                        }
                     }
                 }
             }
 
-            // Books Shelf 3-Column Grid
-            if (libraryBooks.isEmpty()) {
+            // Empty State vs. Adaptive Books Shelf Grid
+            if (allLibraryBooks.isEmpty()) {
+                // Centered "Add Books" Empty State when the user has no books yet
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(bottom = 84.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                        modifier = Modifier.padding(horizontal = 24.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(76.dp)
+                                .clip(CircleShape)
+                                .background(palette.surfaceColor)
+                                .border(1.dp, palette.borderSubtle, CircleShape)
+                                .clickable { onImportEpubClick() },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            PlusVectorIcon(color = palette.textPrimary, size = 32.dp)
+                        }
+
+                        Spacer(modifier = Modifier.height(18.dp))
+
+                        Text(
+                            text = "Add Books",
+                            fontFamily = FontFamily.Serif,
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = palette.textPrimary
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Text(
+                            text = "Your library is empty. Import an EPUB, PDF, or TXT book from your device to begin reading.",
+                            fontSize = 14.sp,
+                            lineHeight = 20.sp,
+                            color = palette.textMuted,
+                            textAlign = TextAlign.Center
+                        )
+
+                        Spacer(modifier = Modifier.height(22.dp))
+
+                        Row(
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(palette.textPrimary)
+                                .clickable { onImportEpubClick() }
+                                .padding(horizontal = 24.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            PlusVectorIcon(color = palette.appBackground, size = 18.dp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Add Book",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = palette.appBackground
+                            )
+                        }
+                    }
+                }
+            } else if (libraryBooks.isEmpty()) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -259,17 +353,12 @@ fun LibraryScreen(
                             color = palette.textMuted,
                             fontSize = 15.sp
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "Tap + in the top bar to import an EPUB book",
-                            color = palette.textMuted.copy(alpha = 0.7f),
-                            fontSize = 13.sp
-                        )
                     }
                 }
             } else {
                 LazyVerticalGrid(
-                    columns = GridCells.Fixed(3),
+                    state = gridState,
+                    columns = GridCells.Adaptive(minSize = 104.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f),
@@ -277,11 +366,18 @@ fun LibraryScreen(
                     horizontalArrangement = Arrangement.spacedBy(14.dp),
                     verticalArrangement = Arrangement.spacedBy(20.dp)
                 ) {
-                    items(libraryBooks, key = { it.id }) { book ->
+                    items(
+                        items = libraryBooks,
+                        key = { it.id },
+                        contentType = { "book_card" }
+                    ) { book ->
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { onBookClick(book) }
+                                .combinedClickable(
+                                    onClick = { onBookClick(book) },
+                                    onLongClick = { bookPendingDelete = book }
+                                )
                         ) {
                             BookCoverView(
                                 book = book,
@@ -317,6 +413,50 @@ fun LibraryScreen(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 22.dp)
+        )
+    }
+
+    // Long-press Delete Book Confirmation Dialog
+    bookPendingDelete?.let { targetBook ->
+        AlertDialog(
+            onDismissRequest = { bookPendingDelete = null },
+            containerColor = palette.menuSurface,
+            titleContentColor = palette.textPrimary,
+            textContentColor = palette.textPrimary,
+            title = {
+                Text(
+                    text = "Delete Book",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            },
+            text = {
+                Text(
+                    text = "Delete \"${targetBook.title}\"? This will remove the book file, cover image, and all its synced notes and highlights.",
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                    color = palette.textSecondary
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDeleteBook(targetBook)
+                        bookPendingDelete = null
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFDC2626),
+                        contentColor = Color.White
+                    )
+                ) {
+                    Text("Delete", fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { bookPendingDelete = null }) {
+                    Text("Cancel", color = palette.textMuted)
+                }
+            }
         )
     }
 }

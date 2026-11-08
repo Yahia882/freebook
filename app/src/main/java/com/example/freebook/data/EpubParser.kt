@@ -1,69 +1,125 @@
 package com.example.freebook.data
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.pdf.PdfRenderer
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import androidx.core.text.HtmlCompat
-import com.example.freebook.model.Book
-import com.example.freebook.model.CoverStyle
+import com.example.freebook.data.storage.BookFileStorage
+import com.example.freebook.data.storage.ContentIdentityHasher
+import com.example.freebook.model.StagedBookImport
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserFactory
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
-import java.io.FileOutputStream
-import java.util.UUID
 import java.util.zip.ZipInputStream
 
 object EpubParser {
 
-    fun parseEpubFromUri(context: Context, uri: Uri): Book? {
+    suspend fun stageBookFromUri(
+        context: Context,
+        uri: Uri,
+        fileStorage: BookFileStorage
+    ): StagedBookImport? = withContext(Dispatchers.IO) {
         val fileName = getFileName(context, uri) ?: "Imported Book.epub"
+        val extension = fileName.substringAfterLast('.', "epub").lowercase()
         val fallbackTitle = fileName
             .removeSuffix(".epub")
             .removeSuffix(".EPUB")
+            .removeSuffix(".pdf")
+            .removeSuffix(".PDF")
             .removeSuffix(".txt")
+            .removeSuffix(".TXT")
             .replace('_', ' ')
             .replace('-', ' ')
             .trim()
             .ifBlank { "Imported Book" }
 
-        return try {
-            val rawBytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                ?: return null
+        val rawBytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            ?: return@withContext null
+        if (rawBytes.isEmpty()) return@withContext null
 
-            // Check if it's a ZIP/EPUB archive (starts with 'PK')
-            if (rawBytes.size >= 4 && rawBytes[0] == 'P'.code.toByte() && rawBytes[1] == 'K'.code.toByte()) {
-                parseZipEpub(context, rawBytes, fallbackTitle)
-            } else {
-                // Plain text fallback
-                val text = rawBytes.toString(Charsets.UTF_8)
-                val pages = paginateText(text).ifEmpty {
-                    listOf("Imported book: $fallbackTitle\n\nNo readable text blocks were found in this file.")
+        val savedRawPath = fileStorage.saveRawBookFile(rawBytes, extension)
+
+        try {
+            val isZip = rawBytes.size >= 4 &&
+                rawBytes[0] == 'P'.code.toByte() &&
+                rawBytes[1] == 'K'.code.toByte()
+            val isPdf = rawBytes.size >= 4 &&
+                rawBytes[0] == '%'.code.toByte() &&
+                rawBytes[1] == 'P'.code.toByte() &&
+                rawBytes[2] == 'D'.code.toByte() &&
+                rawBytes[3] == 'F'.code.toByte()
+
+            val parsed: ParsedBookPayload = when {
+                isZip -> parseZipEpubPayload(rawBytes, fallbackTitle, fileStorage)
+                isPdf -> parsePdfPayload(savedRawPath, rawBytes, fallbackTitle, fileStorage)
+                else -> {
+                    val text = rawBytes.toString(Charsets.UTF_8).trim().ifBlank {
+                        "$fallbackTitle\n\nImported plain-text edition."
+                    }
+                    ParsedBookPayload(
+                        title = fallbackTitle,
+                        author = "Imported Edition",
+                        fullText = text,
+                        coverImagePath = null
+                    )
                 }
-                Book(
-                    title = fallbackTitle,
-                    author = "Imported Edition",
-                    coverStyle = CoverStyle.DEFAULT_EDITORIAL,
-                    pages = pages,
-                    displayTotalPages = pages.size
-                )
             }
+
+            val normalizedContent = ContentIdentityHasher.normalizeForHash(parsed.fullText)
+                .ifBlank { ContentIdentityHasher.normalizeForHash("${parsed.title} ${parsed.author}") }
+            val contentHash = ContentIdentityHasher.sha256Hex(normalizedContent)
+            val textFilePath = fileStorage.saveExtractedTextFile(parsed.fullText)
+            val estimatedPages = (parsed.fullText.length / 750).coerceAtLeast(1)
+
+            StagedBookImport(
+                title = parsed.title,
+                author = parsed.author,
+                normalizedTitle = ContentIdentityHasher.normalizeMetadataField(parsed.title),
+                normalizedAuthor = ContentIdentityHasher.normalizeMetadataField(parsed.author),
+                contentHash = contentHash,
+                rawFilePath = savedRawPath,
+                textContentFilePath = textFilePath,
+                coverImagePath = parsed.coverImagePath,
+                estimatedTotalPages = estimatedPages,
+                normalizedCharLength = normalizedContent.length
+            )
         } catch (e: Exception) {
-            e.printStackTrace()
-            val fallbackPages = listOf(
-                "$fallbackTitle\n\nThis EPUB has been imported into your BookFree library. Swipe left or right to read and tap anywhere on the page to open the Active Reader controls, highlight passages, or take page-synced notes."
-            )
-            Book(
-                title = fallbackTitle,
-                author = "Imported Edition",
-                coverStyle = CoverStyle.DEFAULT_EDITORIAL,
-                pages = fallbackPages,
-                displayTotalPages = fallbackPages.size
-            )
+            fileStorage.deleteBookFiles(savedRawPath, null, null)
+            null
         }
     }
 
-    private fun parseZipEpub(context: Context, zipBytes: ByteArray, fallbackTitle: String): Book {
+    suspend fun copyCustomCoverImage(
+        context: Context,
+        uri: Uri,
+        fileStorage: BookFileStorage
+    ): String? = withContext(Dispatchers.IO) {
+        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            ?: return@withContext null
+        fileStorage.saveCoverImageBytes(bytes)
+    }
+
+    private data class ParsedBookPayload(
+        val title: String,
+        val author: String,
+        val fullText: String,
+        val coverImagePath: String?
+    )
+
+    private suspend fun parseZipEpubPayload(
+        zipBytes: ByteArray,
+        fallbackTitle: String,
+        fileStorage: BookFileStorage
+    ): ParsedBookPayload {
         val entries = LinkedHashMap<String, ByteArray>()
         ZipInputStream(ByteArrayInputStream(zipBytes)).use { zis ->
             var entry = zis.nextEntry
@@ -77,8 +133,8 @@ object EpubParser {
             }
         }
 
-        // 1. Find OPF path via META-INF/container.xml or scan for .opf
-        val opfPath = findOpfPath(entries) ?: entries.keys.firstOrNull { it.endsWith(".opf", ignoreCase = true) }
+        val opfPath = findOpfPath(entries)
+            ?: entries.keys.firstOrNull { it.endsWith(".opf", ignoreCase = true) }
         val opfDir = opfPath?.substringBeforeLast('/', "") ?: ""
 
         var title: String? = null
@@ -146,22 +202,19 @@ object EpubParser {
                     }
                     eventType = parser.next()
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
+            } catch (_: Exception) {
             }
         }
 
-        // 2. Try to extract cover image if present
         val savedCoverPath = extractCoverImage(
-            context = context,
             entries = entries,
             opfDir = opfDir,
             coverId = coverId,
             manifestHrefById = manifestHrefById,
-            manifestMediaById = manifestMediaById
+            manifestMediaById = manifestMediaById,
+            fileStorage = fileStorage
         )
 
-        // 3. Collect ordered HTML/XHTML files from spine (or fallback to all html/xhtml entries)
         val chapterPaths = mutableListOf<String>()
         for (idref in spineIds) {
             val href = manifestHrefById[idref] ?: continue
@@ -187,32 +240,87 @@ object EpubParser {
                 .forEach { chapterPaths.add(it) }
         }
 
-        val allPages = mutableListOf<String>()
+        val chapterTexts = mutableListOf<String>()
         for (path in chapterPaths) {
             val bytes = entries[path] ?: continue
             val rawHtml = bytes.toString(Charsets.UTF_8)
             val cleanedText = htmlToCleanText(rawHtml)
-            if (cleanedText.length > 30) {
-                allPages.addAll(paginateText(cleanedText))
+            if (cleanedText.length > 20) {
+                chapterTexts.add(cleanedText)
             }
         }
 
         val finalTitle = title?.takeIf { it.isNotBlank() } ?: fallbackTitle
-        val finalAuthor = author?.takeIf { it.isNotBlank() } ?: "Classical Press"
-        if (allPages.isEmpty()) {
-            allPages.add(
-                "$finalTitle\nby $finalAuthor\n\nImported from EPUB. Begin reading, highlighting key thoughts, and adding page-synced notes."
-            )
+        val finalAuthor = author?.takeIf { it.isNotBlank() } ?: "Unknown Author"
+        val combinedText = chapterTexts.joinToString("\n\n").ifBlank {
+            "$finalTitle\nby $finalAuthor\n\nImported from EPUB."
         }
 
-        return Book(
+        return ParsedBookPayload(
             title = finalTitle,
             author = finalAuthor,
-            coverStyle = CoverStyle.DEFAULT_EDITORIAL,
-            coverImagePath = savedCoverPath,
-            pages = allPages,
-            displayTotalPages = allPages.size
+            fullText = combinedText,
+            coverImagePath = savedCoverPath
         )
+    }
+
+    private suspend fun parsePdfPayload(
+        savedRawPath: String,
+        rawBytes: ByteArray,
+        fallbackTitle: String,
+        fileStorage: BookFileStorage
+    ): ParsedBookPayload {
+        var coverPath: String? = null
+        var pageCount = 1
+        try {
+            val file = File(savedRawPath)
+            ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)?.use { pfd ->
+                PdfRenderer(pfd).use { renderer ->
+                    pageCount = renderer.pageCount.coerceAtLeast(1)
+                    if (renderer.pageCount > 0) {
+                        renderer.openPage(0).use { firstPage ->
+                            val bmp = Bitmap.createBitmap(
+                                firstPage.width.coerceIn(200, 800),
+                                firstPage.height.coerceIn(280, 1120),
+                                Bitmap.Config.ARGB_8888
+                            )
+                            Canvas(bmp).drawColor(Color.WHITE)
+                            firstPage.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                            val out = ByteArrayOutputStream()
+                            @Suppress("DEPRECATION")
+                            bmp.compress(Bitmap.CompressFormat.WEBP, 85, out)
+                            bmp.recycle()
+                            coverPath = fileStorage.saveCoverImageBytes(out.toByteArray())
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        }
+
+        // Extract printable text literals from PDF stream or provide structured page text
+        val extractedLiterals = extractPrintableTextFromPdfBytes(rawBytes)
+        val fullText = extractedLiterals.ifBlank {
+            "$fallbackTitle\n\nImported PDF Document ($pageCount pages)."
+        }
+        return ParsedBookPayload(
+            title = fallbackTitle,
+            author = "PDF Document",
+            fullText = fullText,
+            coverImagePath = coverPath
+        )
+    }
+
+    private fun extractPrintableTextFromPdfBytes(bytes: ByteArray): String {
+        val rawLatin = String(bytes, Charsets.ISO_8859_1)
+        val parenMatches = Regex("\\(([^()\\\\]{4,200})\\)")
+            .findAll(rawLatin)
+            .map { it.groupValues[1].trim() }
+            .filter { token ->
+                token.count { ch -> ch.isLetterOrDigit() || ch == ' ' } > token.length * 0.85
+            }
+            .toList()
+        return parenMatches.joinToString(" ").trim()
     }
 
     private fun findOpfPath(entries: Map<String, ByteArray>): String? {
@@ -234,18 +342,18 @@ object EpubParser {
                 eventType = parser.next()
             }
             null
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
     }
 
-    private fun extractCoverImage(
-        context: Context,
+    private suspend fun extractCoverImage(
         entries: Map<String, ByteArray>,
         opfDir: String,
         coverId: String?,
         manifestHrefById: Map<String, String>,
-        manifestMediaById: Map<String, String>
+        manifestMediaById: Map<String, String>,
+        fileStorage: BookFileStorage
     ): String? {
         var candidatePath: String? = null
 
@@ -259,7 +367,6 @@ object EpubParser {
         }
 
         if (candidatePath == null) {
-            // Look for manifest item with image media type and "cover" in id or href
             val coverEntry = manifestHrefById.entries.firstOrNull { (id, href) ->
                 val media = manifestMediaById[id].orEmpty()
                 val isImage = media.startsWith("image/", ignoreCase = true) ||
@@ -277,34 +384,17 @@ object EpubParser {
         if (candidatePath == null) {
             candidatePath = entries.keys.firstOrNull { key ->
                 val lower = key.lowercase()
-                lower.contains("cover") && (lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") || lower.endsWith(".webp"))
+                lower.contains("cover") && (
+                    lower.endsWith(".jpg") ||
+                        lower.endsWith(".jpeg") ||
+                        lower.endsWith(".png") ||
+                        lower.endsWith(".webp")
+                    )
             }
         }
 
         val imageBytes = candidatePath?.let { entries[it] ?: entries[Uri.decode(it)] } ?: return null
-        if (imageBytes.isEmpty()) return null
-
-        return try {
-            val coversDir = File(context.filesDir, "covers").apply { mkdirs() }
-            val outFile = File(coversDir, "cover_${UUID.randomUUID()}.img")
-            FileOutputStream(outFile).use { it.write(imageBytes) }
-            outFile.absolutePath
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    fun copyCustomCoverImage(context: Context, uri: Uri): String? {
-        return try {
-            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return null
-            if (bytes.isEmpty()) return null
-            val coversDir = File(context.filesDir, "covers").apply { mkdirs() }
-            val outFile = File(coversDir, "custom_cover_${UUID.randomUUID()}.img")
-            FileOutputStream(outFile).use { it.write(bytes) }
-            outFile.absolutePath
-        } catch (e: Exception) {
-            null
-        }
+        return fileStorage.saveCoverImageBytes(imageBytes)
     }
 
     private fun resolveRelativePath(baseDir: String, relativeHref: String): String {
@@ -333,47 +423,6 @@ object EpubParser {
             .replace(Regex("[ \\t]+"), " ")
             .replace(Regex("\\n{3,}"), "\n\n")
             .trim()
-    }
-
-    fun paginateText(text: String, maxCharsPerPage: Int = 920): List<String> {
-        val cleaned = text.trim()
-        if (cleaned.isEmpty()) return emptyList()
-
-        val paragraphs = cleaned.split(Regex("\\n\\s*\\n"))
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-
-        val pages = mutableListOf<String>()
-        val currentBuilder = StringBuilder()
-
-        for (para in paragraphs) {
-            if (currentBuilder.isNotEmpty() && currentBuilder.length + para.length + 2 > maxCharsPerPage) {
-                pages.add(currentBuilder.toString().trim())
-                currentBuilder.clear()
-            }
-
-            if (para.length > maxCharsPerPage) {
-                // Split long paragraph by sentences
-                val sentences = para.split(Regex("(?<=[.!?])\\s+"))
-                for (sentence in sentences) {
-                    if (currentBuilder.isNotEmpty() && currentBuilder.length + sentence.length + 1 > maxCharsPerPage) {
-                        pages.add(currentBuilder.toString().trim())
-                        currentBuilder.clear()
-                    }
-                    if (currentBuilder.isNotEmpty()) currentBuilder.append(" ")
-                    currentBuilder.append(sentence)
-                }
-            } else {
-                if (currentBuilder.isNotEmpty()) currentBuilder.append("\n\n")
-                currentBuilder.append(para)
-            }
-        }
-
-        if (currentBuilder.isNotEmpty()) {
-            pages.add(currentBuilder.toString().trim())
-        }
-
-        return pages
     }
 
     private fun getFileName(context: Context, uri: Uri): String? {

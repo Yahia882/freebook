@@ -1,8 +1,10 @@
 package com.example.freebook.ui.screens
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,6 +18,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -30,6 +33,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,6 +41,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -49,23 +54,29 @@ import com.example.freebook.ui.components.FloatingBottomDock
 import com.example.freebook.ui.components.TopBarMoreMenuButton
 import com.example.freebook.ui.theme.LocalBookFreePalette
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun BookNotesDetailScreen(
     book: Book,
     annotations: List<BookAnnotation>,
     isDarkTheme: Boolean,
+    enablePageAnimations: Boolean,
     onBack: () -> Unit,
     onAddAnnotation: (type: AnnotationType, pageNumber: Int, text: String) -> Unit,
+    onDeleteAnnotation: (BookAnnotation) -> Unit,
     onToggleTheme: (Boolean) -> Unit,
+    onTogglePageAnimations: (Boolean) -> Unit,
     onOpenAbout: () -> Unit,
     onNavigateToLibrary: () -> Unit,
     onNavigateToNotesList: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalBookFreePalette.current
-    var showAddAnnotationDialog by remember { mutableStateOf(false) }
+    var showAddAnnotationDialog by rememberSaveable { mutableStateOf(false) }
+    var annotationPendingDelete by remember { mutableStateOf<BookAnnotation?>(null) }
 
-    // Always sorted ascending based on book pages
+    val listState = rememberLazyListState()
+
     val sortedAnnotations = remember(annotations) {
         annotations.sortedWith(compareBy<BookAnnotation> { it.pageNumber }.thenBy { it.createdAt })
     }
@@ -106,13 +117,15 @@ fun BookNotesDetailScreen(
                     modifier = Modifier
                         .weight(1f)
                         .padding(horizontal = 12.dp),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    textAlign = TextAlign.Center
                 )
 
                 TopBarMoreMenuButton(
                     isDarkTheme = isDarkTheme,
                     onToggleTheme = onToggleTheme,
                     onOpenAbout = onOpenAbout,
+                    enablePageAnimations = enablePageAnimations,
+                    onTogglePageAnimations = onTogglePageAnimations,
                     extraMenuItemLabel = "+ Add Note / Highlight",
                     onExtraMenuItemClick = { showAddAnnotationDialog = true }
                 )
@@ -133,14 +146,14 @@ fun BookNotesDetailScreen(
                             text = "No highlights or notes yet for \"${book.title}\"",
                             fontSize = 15.sp,
                             color = palette.textMuted,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            textAlign = TextAlign.Center
                         )
                         Spacer(modifier = Modifier.height(10.dp))
                         Text(
                             text = "Notes and highlights taken while reading this book automatically sync here sorted by page.",
                             fontSize = 13.sp,
                             color = palette.textMuted.copy(alpha = 0.75f),
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            textAlign = TextAlign.Center
                         )
                         Spacer(modifier = Modifier.height(16.dp))
                         Box(
@@ -161,19 +174,27 @@ fun BookNotesDetailScreen(
                 }
             } else {
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
                         .padding(horizontal = 18.dp),
                     contentPadding = PaddingValues(bottom = 115.dp)
                 ) {
-                    items(sortedAnnotations, key = { it.id }) { item ->
+                    items(
+                        items = sortedAnnotations,
+                        key = { it.id },
+                        contentType = { "annotation_item" }
+                    ) { item ->
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .combinedClickable(
+                                    onClick = {},
+                                    onLongClick = { annotationPendingDelete = item }
+                                )
                                 .padding(vertical = 20.dp)
                         ) {
-                            // Top row: HIGHLIGHT / NOTE on left, PAGE X on right
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -197,7 +218,6 @@ fun BookNotesDetailScreen(
 
                             Spacer(modifier = Modifier.height(10.dp))
 
-                            // Main text
                             Text(
                                 text = item.text,
                                 fontSize = 15.sp,
@@ -206,7 +226,6 @@ fun BookNotesDetailScreen(
                                 color = palette.textPrimary
                             )
 
-                            // Timestamp subtitle for NOTE entries matching Stitch design
                             if (item.type == AnnotationType.NOTE) {
                                 Spacer(modifier = Modifier.height(10.dp))
                                 Text(
@@ -240,9 +259,9 @@ fun BookNotesDetailScreen(
     }
 
     if (showAddAnnotationDialog) {
-        var selectedType by remember { mutableStateOf(AnnotationType.NOTE) }
-        var pageInput by remember { mutableStateOf(book.currentDisplayPage.toString()) }
-        var contentInput by remember { mutableStateOf("") }
+        var selectedType by rememberSaveable { mutableStateOf(AnnotationType.NOTE) }
+        var pageInput by rememberSaveable { mutableStateOf(book.currentDisplayPage.toString()) }
+        var contentInput by rememberSaveable { mutableStateOf("") }
 
         AlertDialog(
             onDismissRequest = { showAddAnnotationDialog = false },
@@ -321,6 +340,51 @@ fun BookNotesDetailScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showAddAnnotationDialog = false }) {
+                    Text("Cancel", color = palette.textMuted)
+                }
+            }
+        )
+    }
+
+    // Long-press Delete Note / Highlight Confirmation Dialog
+    annotationPendingDelete?.let { targetAnn ->
+        val label = if (targetAnn.type == AnnotationType.HIGHLIGHT) "Highlight" else "Note"
+        AlertDialog(
+            onDismissRequest = { annotationPendingDelete = null },
+            containerColor = palette.menuSurface,
+            titleContentColor = palette.textPrimary,
+            textContentColor = palette.textPrimary,
+            title = {
+                Text(
+                    text = "Delete $label",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            },
+            text = {
+                Text(
+                    text = "Delete this $label from Page ${targetAnn.pageNumber}?\n\n\"${targetAnn.text}\"",
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                    color = palette.textSecondary
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDeleteAnnotation(targetAnn)
+                        annotationPendingDelete = null
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFDC2626),
+                        contentColor = Color.White
+                    )
+                ) {
+                    Text("Delete", fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { annotationPendingDelete = null }) {
                     Text("Cancel", color = palette.textMuted)
                 }
             }
