@@ -1,7 +1,18 @@
 package com.example.freebook
 
 import android.content.Intent
+import android.content.res.Configuration
+import android.graphics.Color as AndroidColor
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
+import android.view.ActionMode
+import android.view.View
+import android.view.ViewGroup
+import android.view.ViewTreeObserver
+import android.view.inspector.WindowInspector
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -38,7 +49,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.freebook.model.HighlightColor
+import com.example.freebook.model.ReaderTheme
 import com.example.freebook.ui.BookFreeViewModel
+import com.example.freebook.ui.reader.ReadiumActionModeCallbackWrapper
+import com.example.freebook.ui.reader.ReadiumActionModeSession
+import com.example.freebook.ui.reader.ReadiumWebViewNavigator
 import com.example.freebook.ui.screens.AboutScreen
 import com.example.freebook.ui.screens.BookNotesDetailScreen
 import com.example.freebook.ui.screens.BookReaderScreen
@@ -97,17 +113,240 @@ private val ScreenDestinationSaver: Saver<ScreenDestination, List<String>> = Sav
 )
 
 class MainActivity : ComponentActivity() {
+
+    private var activeActionModeSession: ReadiumActionModeSession? = null
+    private var currentActionMode: ActionMode? = null
+    private val hookedPopupRoots = java.util.Collections.newSetFromMap(java.util.WeakHashMap<View, Boolean>())
+
+    private fun syncActionModeThemeAndConfiguration(isDark: Boolean) {
+        val styleRes = if (isDark) R.style.Theme_Freebook_Dark else R.style.Theme_Freebook_Light
+        val nightBits = if (isDark) Configuration.UI_MODE_NIGHT_YES else Configuration.UI_MODE_NIGHT_NO
+        resources?.configuration?.let { cfg ->
+            cfg.uiMode = (cfg.uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or nightBits
+        }
+        setTheme(styleRes)
+        theme?.applyStyle(styleRes, true)
+    }
+
+    fun registerReadiumActionModeSession(session: ReadiumActionModeSession?) {
+        activeActionModeSession = session
+        if (session != null) {
+            session.onStyleActionModePopup = {
+                scheduleFloatingPopupStyling(session)
+            }
+            syncActionModeThemeAndConfiguration(session.isDarkMode)
+        } else {
+            currentActionMode?.finish()
+            currentActionMode = null
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            BookFreeApp()
+            BookFreeApp(
+                onRegisterActionModeSession = { registerReadiumActionModeSession(it) }
+            )
+        }
+    }
+
+    override fun onWindowStartingActionMode(callback: ActionMode.Callback?): ActionMode? {
+        val session = activeActionModeSession
+        if (session != null) {
+            syncActionModeThemeAndConfiguration(session.isDarkMode)
+            val wrapped = if (callback is ReadiumActionModeCallbackWrapper) {
+                callback
+            } else {
+                ReadiumActionModeCallbackWrapper(callback, session)
+            }
+            return super.onWindowStartingActionMode(wrapped)
+        }
+        return super.onWindowStartingActionMode(callback)
+    }
+
+    override fun onWindowStartingActionMode(callback: ActionMode.Callback?, type: Int): ActionMode? {
+        val session = activeActionModeSession
+        if (session != null) {
+            syncActionModeThemeAndConfiguration(session.isDarkMode)
+            val wrapped = if (callback is ReadiumActionModeCallbackWrapper) {
+                callback
+            } else {
+                ReadiumActionModeCallbackWrapper(callback, session)
+            }
+            return super.onWindowStartingActionMode(wrapped, type)
+        }
+        return super.onWindowStartingActionMode(callback, type)
+    }
+
+    /**
+     * Overrides the Activity's [onActionModeStarted] to clear the default OS text selection menu
+     * and inject custom options (`Highlight`, `Add Note`, `Copy`) styled to match the reader theme.
+     */
+    override fun onActionModeStarted(mode: ActionMode?) {
+        val session = activeActionModeSession
+        if (session != null) {
+            syncActionModeThemeAndConfiguration(session.isDarkMode)
+        }
+        super.onActionModeStarted(mode)
+        if (session == null || mode == null) return
+        currentActionMode = mode
+
+        mode.menu?.let { menu ->
+            ReadiumWebViewNavigator.populateCustomActionModeMenu(mode, menu, session)
+        }
+        scheduleFloatingPopupStyling(session)
+    }
+
+    override fun onActionModeFinished(mode: ActionMode?) {
+        if (currentActionMode === mode) {
+            currentActionMode = null
+        }
+        super.onActionModeFinished(mode)
+    }
+
+    private fun scheduleFloatingPopupStyling(session: ReadiumActionModeSession) {
+        styleFloatingActionModePopup(session)
+        window.decorView.post {
+            styleFloatingActionModePopup(session)
+        }
+        window.decorView.postDelayed({
+            if (currentActionMode != null) {
+                styleFloatingActionModePopup(session)
+            }
+        }, 48L)
+    }
+
+    private fun styleFloatingActionModePopup(session: ReadiumActionModeSession) {
+        val (pillBgColor, pillBorderColor, pillTextColor) = when (session.readerTheme) {
+            ReaderTheme.DARK, ReaderTheme.AMOLED -> Triple(
+                AndroidColor.parseColor("#27272A"),
+                AndroidColor.parseColor("#3F3F46"),
+                AndroidColor.parseColor("#FAFAFA")
+            )
+            ReaderTheme.SEPIA -> Triple(
+                AndroidColor.parseColor("#FDFBF7"),
+                AndroidColor.parseColor("#D6C7B2"),
+                AndroidColor.parseColor("#3E2C23")
+            )
+            ReaderTheme.LIGHT -> Triple(
+                AndroidColor.parseColor("#FFFFFF"),
+                AndroidColor.parseColor("#D4D4D8"),
+                AndroidColor.parseColor("#18181B")
+            )
+        }
+
+        val density = resources.displayMetrics.density
+
+        fun createPillBackground(): GradientDrawable {
+            return GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 24f * density
+                setColor(pillBgColor)
+                setStroke((1f * density).toInt().coerceAtLeast(1), pillBorderColor)
+            }
+        }
+
+        fun styleTextViewsRecursively(view: View) {
+            if (view is TextView) {
+                view.setTextColor(pillTextColor)
+                view.typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            } else if (view is ViewGroup) {
+                for (i in 0 until view.childCount) {
+                    styleTextViewsRecursively(view.getChildAt(i))
+                }
+            }
+        }
+
+        fun findAndStylePopupContainer(root: View): Boolean {
+            val tagStr = (root.tag as? String).orEmpty().lowercase()
+            val resName = runCatching {
+                if (root.id != View.NO_ID) resources.getResourceEntryName(root.id).lowercase() else ""
+            }.getOrDefault("")
+            val clsName = root.javaClass.name.lowercase()
+
+            if (tagStr == "floating_toolbar" ||
+                resName == "floating_popup_container" ||
+                clsName.contains("actionbarcontextview") ||
+                resName.contains("action_context_bar")
+            ) {
+                root.background = createPillBackground()
+                styleTextViewsRecursively(root)
+                return true
+            }
+
+            if (root is ViewGroup) {
+                for (i in 0 until root.childCount) {
+                    if (findAndStylePopupContainer(root.getChildAt(i))) {
+                        return true
+                    }
+                }
+            }
+            return false
+        }
+
+        fun stylePopupRoot(popupRoot: View) {
+            if (!findAndStylePopupContainer(popupRoot)) {
+                // Fallback: find the first child ViewGroup with a non-null background inside the popup window
+                if (popupRoot is ViewGroup) {
+                    var targetContainer: ViewGroup? = null
+                    fun locateFirstBackedGroup(group: ViewGroup) {
+                        if (targetContainer != null) return
+                        if (group !== popupRoot && group.background != null) {
+                            targetContainer = group
+                            return
+                        }
+                        for (i in 0 until group.childCount) {
+                            val child = group.getChildAt(i)
+                            if (child is ViewGroup) {
+                                locateFirstBackedGroup(child)
+                            }
+                        }
+                    }
+                    locateFirstBackedGroup(popupRoot)
+                    val container = targetContainer ?: popupRoot
+                    container.background = createPillBackground()
+                    styleTextViewsRecursively(container)
+                }
+            }
+        }
+
+        // 1. Style any in-window ActionMode views if present
+        findAndStylePopupContainer(window.decorView)
+
+        // 2. Style FloatingToolbar PopupWindow views via WindowInspector (API 29+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val rootViews = runCatching { WindowInspector.getGlobalWindowViews() }.getOrDefault(emptyList())
+            for (rootView in rootViews) {
+                if (rootView !== window.decorView) {
+                    stylePopupRoot(rootView)
+                    if (hookedPopupRoots.add(rootView)) {
+                        rootView.viewTreeObserver?.addOnPreDrawListener(
+                            object : ViewTreeObserver.OnPreDrawListener {
+                                override fun onPreDraw(): Boolean {
+                                    if (!rootView.isAttachedToWindow) {
+                                        rootView.viewTreeObserver?.removeOnPreDrawListener(this)
+                                        hookedPopupRoots.remove(rootView)
+                                        return true
+                                    }
+                                    val active = activeActionModeSession
+                                    if (active != null && currentActionMode != null) {
+                                        stylePopupRoot(rootView)
+                                    }
+                                    return true
+                                }
+                            }
+                        )
+                    }
+                }
+            }
         }
     }
 }
 
 @Composable
 fun BookFreeApp(
+    onRegisterActionModeSession: (ReadiumActionModeSession?) -> Unit = {},
     viewModel: BookFreeViewModel = viewModel(factory = BookFreeViewModel.Factory)
 ) {
     val context = LocalContext.current
@@ -292,29 +531,41 @@ fun BookFreeApp(
                         BookReaderScreen(
                             book = book,
                             bookAnnotations = bookAnnotations,
-                            isDarkTheme = isDarkTheme,
-                            fontSizeSp = fontSizeSp,
-                            enablePageAnimations = enablePageAnimations,
+                            preferences = uiState.preferences,
                             loadBookText = { targetBook -> viewModel.loadBookText(targetBook) },
-                            onToggleTheme = { viewModel.setDarkTheme(it) },
-                            onFontSizeChange = { newSize -> viewModel.setFontSizeSp(newSize) },
-                            onPageChanged = { charOffset, totalChars, pageIndex, pageCount ->
-                                viewModel.updateReadingProgress(
+                            onRegisterActionModeSession = onRegisterActionModeSession,
+                            onSelectReaderTheme = { viewModel.setReaderTheme(it) },
+                            onSelectFontSizeMultiplier = { viewModel.setFontSizeMultiplier(it) },
+                            onSelectLineHeightMultiplier = { viewModel.setLineHeightMultiplier(it) },
+                            onSelectPageMarginDp = { viewModel.setPageMarginDp(it) },
+                            onSelectTextAlignment = { viewModel.setTextAlignment(it) },
+                            onSelectPublisherStyles = { viewModel.setPublisherStyles(it) },
+                            onSelectNavigationMode = { viewModel.setNavigationMode(it) },
+                            onSelectFixedLayoutFitMode = { viewModel.setFixedLayoutFitMode(it) },
+                            onLocatorChanged = { charOffset, totalChars, derivedPosIdx, derivedPosCount ->
+                                viewModel.updateReadingLocator(
                                     bookId = book.id,
                                     charOffset = charOffset,
                                     totalChars = totalChars,
-                                    pageIndex = pageIndex,
-                                    pageCount = pageCount
+                                    derivedPositionIndex = derivedPosIdx,
+                                    derivedPositionCount = derivedPosCount
                                 )
                             },
-                            onAddAnnotation = { type, pageNumber, text ->
+                            onAddAnnotation = { type, pageNumber, charOffset, endCharOffset, text, quotedText, highlightColorName ->
                                 viewModel.addAnnotation(
                                     bookId = book.id,
                                     type = type,
                                     pageNumber = pageNumber,
+                                    charOffset = charOffset,
+                                    endCharOffset = endCharOffset,
                                     text = text,
+                                    quotedText = quotedText,
+                                    highlightColorName = highlightColorName,
                                     showToast = true
                                 )
+                            },
+                            onUpdateAnnotationColor = { annotation, color ->
+                                viewModel.updateAnnotationHighlightColor(annotation.id, color)
                             },
                             onDeleteAnnotation = { annotation ->
                                 viewModel.deleteAnnotation(annotation)

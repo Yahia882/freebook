@@ -39,6 +39,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -126,7 +127,7 @@ fun BookNotesDetailScreen(
                     onOpenAbout = onOpenAbout,
                     enablePageAnimations = enablePageAnimations,
                     onTogglePageAnimations = onTogglePageAnimations,
-                    extraMenuItemLabel = "+ Add Note / Highlight",
+                    extraMenuItemLabel = "+ Add Note",
                     onExtraMenuItemClick = { showAddAnnotationDialog = true }
                 )
             }
@@ -164,7 +165,7 @@ fun BookNotesDetailScreen(
                                 .padding(horizontal = 18.dp, vertical = 9.dp)
                         ) {
                             Text(
-                                text = "+ Add Note or Highlight",
+                                text = "+ Add Note",
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Medium,
                                 color = Color.White
@@ -200,17 +201,30 @@ fun BookNotesDetailScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(
-                                    text = when (item.type) {
-                                        AnnotationType.HIGHLIGHT -> "HIGHLIGHT"
-                                        AnnotationType.BOOKMARK -> "BOOKMARK"
-                                        AnnotationType.NOTE -> "NOTE"
-                                    },
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    letterSpacing = 0.9.sp,
-                                    color = palette.textMuted
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    if (item.type == AnnotationType.HIGHLIGHT) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(9.dp)
+                                                .clip(CircleShape)
+                                                .background(Color(item.highlightColor.solidArgb))
+                                        )
+                                    }
+                                    Text(
+                                        text = when (item.type) {
+                                            AnnotationType.HIGHLIGHT -> "HIGHLIGHT (${item.highlightColor.label.uppercase()})"
+                                            AnnotationType.BOOKMARK -> "BOOKMARK"
+                                            AnnotationType.NOTE -> "NOTE"
+                                        },
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        letterSpacing = 0.9.sp,
+                                        color = palette.textMuted
+                                    )
+                                }
                                 Text(
                                     text = "PAGE ${item.pageNumber}",
                                     fontSize = 11.sp,
@@ -221,6 +235,25 @@ fun BookNotesDetailScreen(
                             }
 
                             Spacer(modifier = Modifier.height(10.dp))
+
+                            if (item.type == AnnotationType.NOTE && item.quotedText.isNotBlank()) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(palette.surfaceColor)
+                                        .border(1.dp, palette.borderSubtle, RoundedCornerShape(8.dp))
+                                        .padding(10.dp)
+                                ) {
+                                    Text(
+                                        text = "\"${item.quotedText}\"",
+                                        fontSize = 13.sp,
+                                        fontStyle = FontStyle.Italic,
+                                        color = palette.textSecondary
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                            }
 
                             Text(
                                 text = item.text,
@@ -263,7 +296,6 @@ fun BookNotesDetailScreen(
     }
 
     if (showAddAnnotationDialog) {
-        var selectedType by rememberSaveable { mutableStateOf(AnnotationType.NOTE) }
         var pageInput by rememberSaveable { mutableStateOf(book.currentDisplayPage.toString()) }
         var contentInput by rememberSaveable { mutableStateOf("") }
 
@@ -274,36 +306,13 @@ fun BookNotesDetailScreen(
             textContentColor = palette.textPrimary,
             title = {
                 Text(
-                    text = "Add to ${book.title}",
+                    text = "Add Note to ${book.title}",
                     fontSize = 17.sp,
                     fontWeight = FontWeight.SemiBold
                 )
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        AnnotationType.entries.forEach { type ->
-                            val isSelected = selectedType == type
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(if (isSelected) palette.dockTabActiveBg else Color.Transparent)
-                                    .border(1.dp, palette.borderSubtle, RoundedCornerShape(10.dp))
-                                    .clickable { selectedType = type }
-                                    .padding(vertical = 8.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = type.name,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (isSelected) Color.White else palette.textMuted
-                                )
-                            }
-                        }
-                    }
-
                     OutlinedTextField(
                         value = pageInput,
                         onValueChange = { pageInput = it.filter { ch -> ch.isDigit() } },
@@ -316,9 +325,7 @@ fun BookNotesDetailScreen(
                     OutlinedTextField(
                         value = contentInput,
                         onValueChange = { contentInput = it },
-                        label = {
-                            Text(if (selectedType == AnnotationType.HIGHLIGHT) "Highlight Text" else "Note Content")
-                        },
+                        label = { Text("Type your note...") },
                         minLines = 3,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -330,7 +337,7 @@ fun BookNotesDetailScreen(
                         val pageNum = pageInput.toIntOrNull()?.coerceAtLeast(1) ?: 1
                         val trimmed = contentInput.trim()
                         if (trimmed.isNotEmpty()) {
-                            onAddAnnotation(selectedType, pageNum, trimmed)
+                            onAddAnnotation(AnnotationType.NOTE, pageNum, trimmed)
                             showAddAnnotationDialog = false
                         }
                     },
@@ -339,7 +346,7 @@ fun BookNotesDetailScreen(
                         contentColor = palette.appBackground
                     )
                 ) {
-                    Text("Save", fontWeight = FontWeight.SemiBold)
+                    Text("Save Note", fontWeight = FontWeight.SemiBold)
                 }
             },
             dismissButton = {

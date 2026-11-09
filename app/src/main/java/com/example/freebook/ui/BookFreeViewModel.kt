@@ -17,7 +17,12 @@ import com.example.freebook.model.AnnotationType
 import com.example.freebook.model.Book
 import com.example.freebook.model.BookAnnotation
 import com.example.freebook.model.BookImportResult
+import com.example.freebook.model.FixedLayoutFitMode
+import com.example.freebook.model.HighlightColor
+import com.example.freebook.model.ReaderNavigationMode
 import com.example.freebook.model.ReaderPreferences
+import com.example.freebook.model.ReaderTextAlign
+import com.example.freebook.model.ReaderTheme
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -26,6 +31,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.Locale
 
 data class BookFreeUiState(
     val books: List<Book> = emptyList(),
@@ -79,7 +85,6 @@ class BookFreeViewModel(
                     }
                 }
                 is BookImportResult.ExactDuplicateSilentBlock -> {
-                    // Exact-content duplicate blocked silently & staged files already cleaned up.
                 }
                 is BookImportResult.FuzzyDuplicateRequiresConfirmation -> {
                     transientState.update {
@@ -165,6 +170,7 @@ class BookFreeViewModel(
                 currentPageIndex = book.currentPageIndex,
                 totalPages = book.totalPages.coerceAtLeast(1),
                 readingCharOffset = book.readingCharOffset,
+                locatorJson = book.locatorJson,
                 readingProgress = book.readingProgress,
                 isStarted = true,
                 isFinished = book.isFinished
@@ -173,36 +179,44 @@ class BookFreeViewModel(
     }
 
     /**
-     * Persists the reader position on EVERY page change (forward, backward, or back to page 1).
-     * The position is stored as a layout-independent character offset so it survives
-     * text-size / screen-size changes, which alter the number of pages.
+     * Persists the reader position as a stable layout-independent locator (`charOffset` + `locatorJson` + `progress`).
      */
-    fun updateReadingProgress(
+    fun updateReadingLocator(
         bookId: String,
         charOffset: Int,
         totalChars: Int,
-        pageIndex: Int,
-        pageCount: Int
+        derivedPositionIndex: Int,
+        derivedPositionCount: Int
     ) {
         val safeTotalChars = totalChars.coerceAtLeast(1)
-        val safeOffset = charOffset.coerceIn(0, safeTotalChars - 1)
-        val safePageCount = pageCount.coerceAtLeast(1)
-        val isLastPage = safePageCount > 1 && pageIndex >= safePageCount - 1
-        val progress = if (isLastPage) {
+        val safeOffset = charOffset.coerceIn(0, (safeTotalChars - 1).coerceAtLeast(0))
+        val safePositionCount = derivedPositionCount.coerceAtLeast(1)
+        val isAtEnd = safePositionCount > 1 && derivedPositionIndex >= safePositionCount - 1
+        val progression = (safeOffset.toDouble() / safeTotalChars.toDouble()).coerceIn(0.0, 1.0)
+        val progressPercent = if (isAtEnd) {
             100f
         } else {
-            (safeOffset.toFloat() / safeTotalChars.toFloat() * 100f).coerceIn(1f, 99.9f)
+            (progression.toFloat() * 100f).coerceIn(1f, 99.9f)
         }
+        val locatorJson = String.format(
+            Locale.US,
+            "{\"locations\":{\"progression\":%.5f,\"totalProgression\":%.5f,\"position\":%d,\"charOffset\":%d}}",
+            progression,
+            progression,
+            derivedPositionIndex + 1,
+            safeOffset
+        )
 
         viewModelScope.launch {
             bookRepository.updateReadingProgress(
                 bookId = bookId,
-                currentPageIndex = pageIndex.coerceAtLeast(0),
-                totalPages = safePageCount,
+                currentPageIndex = derivedPositionIndex.coerceAtLeast(0),
+                totalPages = safePositionCount,
                 readingCharOffset = safeOffset,
-                readingProgress = progress,
+                locatorJson = locatorJson,
+                readingProgress = progressPercent,
                 isStarted = true,
-                isFinished = isLastPage
+                isFinished = isAtEnd
             )
         }
     }
@@ -211,7 +225,11 @@ class BookFreeViewModel(
         bookId: String,
         type: AnnotationType,
         pageNumber: Int,
+        charOffset: Int = 0,
+        endCharOffset: Int = 0,
         text: String,
+        quotedText: String = "",
+        highlightColorName: String = HighlightColor.YELLOW.name,
         showToast: Boolean = false
     ) {
         viewModelScope.launch {
@@ -219,7 +237,11 @@ class BookFreeViewModel(
                 bookId = bookId,
                 type = type,
                 pageNumber = pageNumber,
-                text = text
+                charOffset = charOffset,
+                endCharOffset = endCharOffset,
+                text = text,
+                quotedText = quotedText,
+                highlightColorName = highlightColorName
             )
             if (showToast) {
                 val label = when (type) {
@@ -228,9 +250,15 @@ class BookFreeViewModel(
                     AnnotationType.NOTE -> "Note"
                 }
                 transientState.update {
-                    it.copy(toastMessage = "$label saved (Page $pageNumber)")
+                    it.copy(toastMessage = "$label saved")
                 }
             }
+        }
+    }
+
+    fun updateAnnotationHighlightColor(annotationId: String, highlightColor: HighlightColor) {
+        viewModelScope.launch {
+            bookRepository.updateAnnotationHighlightColor(annotationId, highlightColor)
         }
     }
 
@@ -263,9 +291,51 @@ class BookFreeViewModel(
         }
     }
 
-    fun setFontSizeSp(fontSizeSp: Float) {
+    fun setReaderTheme(theme: ReaderTheme) {
         viewModelScope.launch {
-            userPreferencesRepository.setFontSizeSp(fontSizeSp)
+            userPreferencesRepository.setReaderTheme(theme)
+        }
+    }
+
+    fun setFontSizeMultiplier(multiplier: Float) {
+        viewModelScope.launch {
+            userPreferencesRepository.setFontSizeMultiplier(multiplier)
+        }
+    }
+
+    fun setLineHeightMultiplier(multiplier: Float) {
+        viewModelScope.launch {
+            userPreferencesRepository.setLineHeightMultiplier(multiplier)
+        }
+    }
+
+    fun setPageMarginDp(marginDp: Int) {
+        viewModelScope.launch {
+            userPreferencesRepository.setPageMarginDp(marginDp)
+        }
+    }
+
+    fun setTextAlignment(alignment: ReaderTextAlign) {
+        viewModelScope.launch {
+            userPreferencesRepository.setTextAlignment(alignment)
+        }
+    }
+
+    fun setPublisherStyles(enabled: Boolean) {
+        viewModelScope.launch {
+            userPreferencesRepository.setPublisherStyles(enabled)
+        }
+    }
+
+    fun setNavigationMode(mode: ReaderNavigationMode) {
+        viewModelScope.launch {
+            userPreferencesRepository.setNavigationMode(mode)
+        }
+    }
+
+    fun setFixedLayoutFitMode(fitMode: FixedLayoutFitMode) {
+        viewModelScope.launch {
+            userPreferencesRepository.setFixedLayoutFitMode(fitMode)
         }
     }
 

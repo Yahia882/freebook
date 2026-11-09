@@ -11,9 +11,19 @@ import android.provider.OpenableColumns
 import androidx.core.text.HtmlCompat
 import com.example.freebook.data.storage.BookFileStorage
 import com.example.freebook.data.storage.ContentIdentityHasher
+import com.example.freebook.model.BookReadingDirection
+import com.example.freebook.model.PublicationLayoutType
 import com.example.freebook.model.StagedBookImport
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.readium.r2.shared.publication.ReadingProgression
+import org.readium.r2.shared.publication.services.cover
+import org.readium.r2.shared.util.asset.AssetRetriever
+import org.readium.r2.shared.util.http.DefaultHttpClient
+import org.readium.r2.shared.util.toUrl
+import org.readium.r2.shared.util.use
+import org.readium.r2.streamer.PublicationOpener
+import org.readium.r2.streamer.parser.DefaultPublicationParser
 import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserFactory
 import java.io.ByteArrayInputStream
@@ -22,6 +32,8 @@ import java.io.File
 import java.util.zip.ZipInputStream
 
 object EpubParser {
+
+    private val rtlLanguagePrefixes = setOf("ar", "he", "iw", "fa", "ur", "yi", "ps", "sd", "ug")
 
     suspend fun stageBookFromUri(
         context: Context,
@@ -49,36 +61,29 @@ object EpubParser {
         val savedRawPath = fileStorage.saveRawBookFile(rawBytes, extension)
 
         try {
-            val isZip = rawBytes.size >= 4 &&
-                rawBytes[0] == 'P'.code.toByte() &&
-                rawBytes[1] == 'K'.code.toByte()
             val isPdf = rawBytes.size >= 4 &&
                 rawBytes[0] == '%'.code.toByte() &&
                 rawBytes[1] == 'P'.code.toByte() &&
                 rawBytes[2] == 'D'.code.toByte() &&
                 rawBytes[3] == 'F'.code.toByte()
 
-            val parsed: ParsedBookPayload = when {
-                isZip -> parseZipEpubPayload(rawBytes, fallbackTitle, fileStorage)
-                isPdf -> parsePdfPayload(savedRawPath, rawBytes, fallbackTitle, fileStorage)
-                else -> {
-                    val text = rawBytes.toString(Charsets.UTF_8).trim().ifBlank {
-                        "$fallbackTitle\n\nImported plain-text edition."
-                    }
-                    ParsedBookPayload(
-                        title = fallbackTitle,
-                        author = "Imported Edition",
-                        fullText = text,
-                        coverImagePath = null
-                    )
-                }
+            val parsed: ParsedBookPayload = if (isPdf) {
+                parsePdfPayload(savedRawPath, rawBytes, fallbackTitle, fileStorage)
+            } else {
+                parseWithReadiumOrFallback(
+                    context = context.applicationContext,
+                    savedRawPath = savedRawPath,
+                    rawBytes = rawBytes,
+                    fallbackTitle = fallbackTitle,
+                    fileStorage = fileStorage
+                )
             }
 
             val normalizedContent = ContentIdentityHasher.normalizeForHash(parsed.fullText)
                 .ifBlank { ContentIdentityHasher.normalizeForHash("${parsed.title} ${parsed.author}") }
             val contentHash = ContentIdentityHasher.sha256Hex(normalizedContent)
             val textFilePath = fileStorage.saveExtractedTextFile(parsed.fullText)
-            val estimatedPages = (parsed.fullText.length / 750).coerceAtLeast(1)
+            val estimatedPages = (parsed.fullText.length / 900).coerceAtLeast(1)
 
             StagedBookImport(
                 title = parsed.title,
@@ -90,7 +95,10 @@ object EpubParser {
                 textContentFilePath = textFilePath,
                 coverImagePath = parsed.coverImagePath,
                 estimatedTotalPages = estimatedPages,
-                normalizedCharLength = normalizedContent.length
+                normalizedCharLength = normalizedContent.length,
+                layoutType = parsed.layoutType,
+                readingDirection = parsed.readingDirection,
+                language = parsed.language
             )
         } catch (e: Exception) {
             fileStorage.deleteBookFiles(savedRawPath, null, null)
@@ -112,10 +120,158 @@ object EpubParser {
         val title: String,
         val author: String,
         val fullText: String,
-        val coverImagePath: String?
+        val coverImagePath: String?,
+        val layoutType: PublicationLayoutType = PublicationLayoutType.REFLOWABLE,
+        val readingDirection: BookReadingDirection = BookReadingDirection.LTR,
+        val language: String = "en"
     )
 
-    private suspend fun parseZipEpubPayload(
+    /**
+     * Primary parser using Readium Kotlin Toolkit (`AssetRetriever` + `DefaultPublicationParser` + `PublicationOpener`).
+     * Inspects OPF metadata (`readingProgression`, `languages`, `presentation.layout`), cover service,
+     * and readingOrder resources.
+     */
+    private suspend fun parseWithReadiumOrFallback(
+        context: Context,
+        savedRawPath: String,
+        rawBytes: ByteArray,
+        fallbackTitle: String,
+        fileStorage: BookFileStorage
+    ): ParsedBookPayload {
+        val bookFile = File(savedRawPath)
+        val httpClient = DefaultHttpClient()
+        val assetRetriever = AssetRetriever(
+            contentResolver = context.contentResolver,
+            httpClient = httpClient
+        )
+        val publicationOpener = PublicationOpener(
+            publicationParser = DefaultPublicationParser(
+                context = context,
+                httpClient = httpClient,
+                assetRetriever = assetRetriever,
+                pdfFactory = null
+            )
+        )
+
+        val asset = assetRetriever.retrieve(bookFile.toUrl()).getOrNull()
+        if (asset != null) {
+            val publication = publicationOpener.open(asset, allowUserInteraction = false).getOrNull()
+            if (publication != null) {
+                try {
+                    val metadata = publication.metadata
+                    val resolvedTitle = metadata.title?.takeIf { it.isNotBlank() } ?: fallbackTitle
+                    val resolvedAuthor = metadata.authors
+                        .mapNotNull { it.name.takeIf { n -> n.isNotBlank() } }
+                        .joinToString(", ")
+                        .ifBlank { "Unknown Author" }
+
+                    val primaryLanguage = metadata.languages.firstOrNull()?.lowercase()?.trim().orEmpty()
+                        .ifBlank { "en" }
+                    val langPrefix = primaryLanguage.substringBefore('-').substringBefore('_')
+
+                    val resolvedDirection = when (metadata.readingProgression) {
+                        ReadingProgression.RTL -> BookReadingDirection.RTL
+                        ReadingProgression.LTR -> {
+                            if (langPrefix in rtlLanguagePrefixes) BookReadingDirection.RTL
+                            else BookReadingDirection.LTR
+                        }
+                        else -> {
+                            if (langPrefix in rtlLanguagePrefixes) BookReadingDirection.RTL
+                            else BookReadingDirection.LTR
+                        }
+                    }
+
+                    val presentationMap = metadata.otherMetadata["presentation"] as? Map<*, *>
+                    val layoutValue = presentationMap?.get("layout")?.toString()?.lowercase().orEmpty()
+                    val resolvedLayout = if (layoutValue == "fixed" || layoutValue == "pre-paginated") {
+                        PublicationLayoutType.FIXED
+                    } else {
+                        PublicationLayoutType.REFLOWABLE
+                    }
+
+                    // Extract cover bitmap from Readium's CoverService if available
+                    var coverPath: String? = null
+                    val coverBitmap = runCatching { publication.cover() }.getOrNull()
+                    if (coverBitmap != null) {
+                        val out = ByteArrayOutputStream()
+                        @Suppress("DEPRECATION")
+                        coverBitmap.compress(Bitmap.CompressFormat.WEBP, 86, out)
+                        coverPath = fileStorage.saveCoverImageBytes(out.toByteArray())
+                    }
+
+                    // Extract spine text in readingOrder via Readium Resource API
+                    val chapterTexts = mutableListOf<String>()
+                    for (link in publication.readingOrder) {
+                        val resource = publication.get(link) ?: continue
+                        val rawBytesResult = resource.use { res -> res.read().getOrNull() }
+                        if (rawBytesResult != null && rawBytesResult.isNotEmpty()) {
+                            val html = rawBytesResult.toString(Charsets.UTF_8)
+                            val cleaned = htmlToCleanText(html)
+                            if (cleaned.length > 15) {
+                                chapterTexts.add(cleaned)
+                            }
+                        }
+                    }
+
+                    val combinedText = chapterTexts.joinToString("\n\n")
+                    if (combinedText.isNotBlank()) {
+                        return ParsedBookPayload(
+                            title = resolvedTitle,
+                            author = resolvedAuthor,
+                            fullText = combinedText,
+                            coverImagePath = coverPath,
+                            layoutType = resolvedLayout,
+                            readingDirection = resolvedDirection,
+                            language = primaryLanguage
+                        )
+                    }
+                } finally {
+                    runCatching { publication.close() }
+                }
+            } else {
+                runCatching { asset.close() }
+            }
+        }
+
+        // Fallback for non-standard ZIP/EPUB or plain TXT files
+        val isZip = rawBytes.size >= 4 &&
+            rawBytes[0] == 'P'.code.toByte() &&
+            rawBytes[1] == 'K'.code.toByte()
+
+        return if (isZip) {
+            parseZipEpubFallback(rawBytes, fallbackTitle, fileStorage)
+        } else {
+            val text = rawBytes.toString(Charsets.UTF_8).trim().ifBlank {
+                "$fallbackTitle\n\nImported plain-text edition."
+            }
+            val detectedRtl = containsMostlyRtlCharacters(text)
+            ParsedBookPayload(
+                title = fallbackTitle,
+                author = "Imported Edition",
+                fullText = text,
+                coverImagePath = null,
+                layoutType = PublicationLayoutType.REFLOWABLE,
+                readingDirection = if (detectedRtl) BookReadingDirection.RTL else BookReadingDirection.LTR,
+                language = if (detectedRtl) "ar" else "en"
+            )
+        }
+    }
+
+    private fun containsMostlyRtlCharacters(text: String): Boolean {
+        val sample = text.take(1200)
+        var rtlCount = 0
+        var ltrCount = 0
+        for (ch in sample) {
+            when (Character.getDirectionality(ch)) {
+                Character.DIRECTIONALITY_RIGHT_TO_LEFT,
+                Character.DIRECTIONALITY_RIGHT_TO_LEFT_ARABIC -> rtlCount++
+                Character.DIRECTIONALITY_LEFT_TO_RIGHT -> ltrCount++
+            }
+        }
+        return rtlCount > ltrCount && rtlCount > 10
+    }
+
+    private suspend fun parseZipEpubFallback(
         zipBytes: ByteArray,
         fallbackTitle: String,
         fileStorage: BookFileStorage
@@ -139,6 +295,9 @@ object EpubParser {
 
         var title: String? = null
         var author: String? = null
+        var language: String? = null
+        var pageProgressionDir: String? = null
+        var renditionLayout: String? = null
         val manifestHrefById = LinkedHashMap<String, String>()
         val manifestMediaById = LinkedHashMap<String, String>()
         val spineIds = mutableListOf<String>()
@@ -154,11 +313,18 @@ object EpubParser {
 
                 var eventType = parser.eventType
                 var currentTag = ""
+                var currentMetaProperty = ""
                 while (eventType != XmlPullParser.END_DOCUMENT) {
                     when (eventType) {
                         XmlPullParser.START_TAG -> {
                             currentTag = parser.name.substringAfter(':')
                             when (currentTag.lowercase()) {
+                                "spine" -> {
+                                    val ppd = parser.getAttributeValue(null, "page-progression-direction")
+                                    if (!ppd.isNullOrBlank()) {
+                                        pageProgressionDir = ppd.lowercase().trim()
+                                    }
+                                }
                                 "item" -> {
                                     val id = parser.getAttributeValue(null, "id")
                                     val href = parser.getAttributeValue(null, "href")
@@ -181,6 +347,7 @@ object EpubParser {
                                 "meta" -> {
                                     val metaName = parser.getAttributeValue(null, "name")
                                     val metaContent = parser.getAttributeValue(null, "content")
+                                    currentMetaProperty = parser.getAttributeValue(null, "property").orEmpty()
                                     if (metaName.equals("cover", ignoreCase = true) && !metaContent.isNullOrBlank()) {
                                         coverId = metaContent
                                     }
@@ -193,11 +360,18 @@ object EpubParser {
                                 when (currentTag.lowercase()) {
                                     "title" -> if (title.isNullOrBlank()) title = textVal
                                     "creator", "author" -> if (author.isNullOrBlank()) author = textVal
+                                    "language" -> if (language.isNullOrBlank()) language = textVal
+                                    "meta" -> {
+                                        if (currentMetaProperty.endsWith("layout", ignoreCase = true)) {
+                                            renditionLayout = textVal.lowercase()
+                                        }
+                                    }
                                 }
                             }
                         }
                         XmlPullParser.END_TAG -> {
                             currentTag = ""
+                            currentMetaProperty = ""
                         }
                     }
                     eventType = parser.next()
@@ -256,11 +430,25 @@ object EpubParser {
             "$finalTitle\nby $finalAuthor\n\nImported from EPUB."
         }
 
+        val normLang = language?.lowercase()?.trim().orEmpty().ifBlank {
+            if (containsMostlyRtlCharacters(combinedText)) "ar" else "en"
+        }
+        val langPrefix = normLang.substringBefore('-').substringBefore('_')
+        val isRtl = pageProgressionDir == "rtl" || langPrefix in rtlLanguagePrefixes
+        val layoutType = if (renditionLayout == "pre-paginated") {
+            PublicationLayoutType.FIXED
+        } else {
+            PublicationLayoutType.REFLOWABLE
+        }
+
         return ParsedBookPayload(
             title = finalTitle,
             author = finalAuthor,
             fullText = combinedText,
-            coverImagePath = savedCoverPath
+            coverImagePath = savedCoverPath,
+            layoutType = layoutType,
+            readingDirection = if (isRtl) BookReadingDirection.RTL else BookReadingDirection.LTR,
+            language = normLang
         )
     }
 
@@ -298,7 +486,6 @@ object EpubParser {
         } catch (_: Exception) {
         }
 
-        // Extract printable text literals from PDF stream or provide structured page text
         val extractedLiterals = extractPrintableTextFromPdfBytes(rawBytes)
         val fullText = extractedLiterals.ifBlank {
             "$fallbackTitle\n\nImported PDF Document ($pageCount pages)."
@@ -307,7 +494,10 @@ object EpubParser {
             title = fallbackTitle,
             author = "PDF Document",
             fullText = fullText,
-            coverImagePath = coverPath
+            coverImagePath = coverPath,
+            layoutType = PublicationLayoutType.FIXED,
+            readingDirection = BookReadingDirection.LTR,
+            language = "en"
         )
     }
 

@@ -9,7 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [BookEntity::class, AnnotationEntity::class],
-    version = 2,
+    version = 4,
     exportSchema = false
 )
 abstract class BookFreeDatabase : RoomDatabase() {
@@ -25,6 +25,24 @@ abstract class BookFreeDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE books ADD COLUMN locatorJson TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE books ADD COLUMN layoutType TEXT NOT NULL DEFAULT 'REFLOWABLE'")
+                db.execSQL("ALTER TABLE books ADD COLUMN readingDirection TEXT NOT NULL DEFAULT 'LTR'")
+                db.execSQL("ALTER TABLE books ADD COLUMN language TEXT NOT NULL DEFAULT 'en'")
+                db.execSQL("ALTER TABLE annotations ADD COLUMN charOffset INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE annotations ADD COLUMN quotedText TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE annotations ADD COLUMN highlightColorName TEXT NOT NULL DEFAULT 'YELLOW'")
+            }
+        }
+
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE annotations ADD COLUMN endCharOffset INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         @Volatile
         private var INSTANCE: BookFreeDatabase? = null
 
@@ -35,7 +53,7 @@ abstract class BookFreeDatabase : RoomDatabase() {
                     BookFreeDatabase::class.java,
                     DB_NAME
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .build()
                     .also { INSTANCE = it }
             }

@@ -21,11 +21,6 @@ interface BookDao {
     @Query("SELECT * FROM books WHERE id = :bookId LIMIT 1")
     suspend fun getBookById(bookId: String): BookEntity?
 
-    /**
-     * Uses `OnConflictStrategy.IGNORE` so the unique index on `contentHash`
-     * enforces at the database level that identical content can never be inserted twice.
-     * Returns -1L if ignored due to conflict.
-     */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertBookOrIgnore(book: BookEntity): Long
 
@@ -35,6 +30,7 @@ interface BookDao {
         SET currentPageIndex = :currentPageIndex,
             totalPages = :totalPages,
             readingCharOffset = :readingCharOffset,
+            locatorJson = :locatorJson,
             readingProgress = :readingProgress,
             isStarted = :isStarted,
             isFinished = :isFinished,
@@ -47,6 +43,7 @@ interface BookDao {
         currentPageIndex: Int,
         totalPages: Int,
         readingCharOffset: Int,
+        locatorJson: String,
         readingProgress: Float,
         isStarted: Boolean,
         isFinished: Boolean,

@@ -12,6 +12,9 @@ import com.example.freebook.model.AnnotationType
 import com.example.freebook.model.Book
 import com.example.freebook.model.BookAnnotation
 import com.example.freebook.model.BookImportResult
+import com.example.freebook.model.BookReadingDirection
+import com.example.freebook.model.HighlightColor
+import com.example.freebook.model.PublicationLayoutType
 import com.example.freebook.model.StagedBookImport
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -35,6 +38,7 @@ interface BookRepository {
         currentPageIndex: Int,
         totalPages: Int,
         readingCharOffset: Int,
+        locatorJson: String,
         readingProgress: Float,
         isStarted: Boolean,
         isFinished: Boolean
@@ -43,8 +47,13 @@ interface BookRepository {
         bookId: String,
         type: AnnotationType,
         pageNumber: Int,
-        text: String
+        charOffset: Int = 0,
+        endCharOffset: Int = 0,
+        text: String,
+        quotedText: String = "",
+        highlightColorName: String = HighlightColor.YELLOW.name
     ): BookAnnotation
+    suspend fun updateAnnotationHighlightColor(annotationId: String, highlightColor: HighlightColor)
     suspend fun deleteBook(book: Book)
     suspend fun deleteAnnotation(annotationId: String)
 }
@@ -67,7 +76,6 @@ class OfflineFirstBookRepository(
         val staged = EpubParser.stageBookFromUri(context, uri, fileStorage)
             ?: return BookImportResult.Error("Could not read the selected file.")
 
-        // 1. Objective Check: Exact content hash match -> Block silently and clean up copied files
         val existingExact = bookDao.getBookByContentHash(staged.contentHash)
         if (existingExact != null) {
             fileStorage.deleteBookFiles(
@@ -78,7 +86,6 @@ class OfflineFirstBookRepository(
             return BookImportResult.ExactDuplicateSilentBlock(existingExact.toDomainModel())
         }
 
-        // 2. Subjective Check: Fuzzy duplicate detection across existing library books -> Warn + Confirm
         val existingLibraryBooks = bookDao.getAllLibraryBooksOnce()
         for (candidate in existingLibraryBooks) {
             val fuzzyReason = ContentIdentityHasher.detectFuzzyDuplicateReason(
@@ -98,12 +105,10 @@ class OfflineFirstBookRepository(
             }
         }
 
-        // 3. No duplicate -> Commit to Room database
         val committed = insertStagedBook(staged)
         return if (committed != null) {
             BookImportResult.Imported(committed)
         } else {
-            // Unique index on `contentHash` rejected insertion (race condition exact duplicate)
             fileStorage.deleteBookFiles(
                 rawFilePath = staged.rawFilePath,
                 textContentFilePath = staged.textContentFilePath,
@@ -145,7 +150,11 @@ class OfflineFirstBookRepository(
             currentPageIndex = 0,
             totalPages = staged.estimatedTotalPages.coerceAtLeast(1),
             readingCharOffset = 0,
+            locatorJson = "",
             readingProgress = 0f,
+            layoutType = staged.layoutType.name,
+            readingDirection = staged.readingDirection.name,
+            language = staged.language,
             isFinished = false,
             isStarted = false,
             isCustomNoteEntryOnly = false,
@@ -186,7 +195,11 @@ class OfflineFirstBookRepository(
             currentPageIndex = 0,
             totalPages = 1,
             readingCharOffset = 0,
+            locatorJson = "",
             readingProgress = 0f,
+            layoutType = PublicationLayoutType.REFLOWABLE.name,
+            readingDirection = BookReadingDirection.LTR.name,
+            language = "en",
             isFinished = false,
             isStarted = false,
             isCustomNoteEntryOnly = true,
@@ -210,6 +223,7 @@ class OfflineFirstBookRepository(
         currentPageIndex: Int,
         totalPages: Int,
         readingCharOffset: Int,
+        locatorJson: String,
         readingProgress: Float,
         isStarted: Boolean,
         isFinished: Boolean
@@ -219,6 +233,7 @@ class OfflineFirstBookRepository(
             currentPageIndex = currentPageIndex.coerceAtLeast(0),
             totalPages = totalPages.coerceAtLeast(1),
             readingCharOffset = readingCharOffset.coerceAtLeast(0),
+            locatorJson = locatorJson,
             readingProgress = readingProgress.coerceIn(0f, 100f),
             isStarted = isStarted,
             isFinished = isFinished,
@@ -230,19 +245,37 @@ class OfflineFirstBookRepository(
         bookId: String,
         type: AnnotationType,
         pageNumber: Int,
-        text: String
+        charOffset: Int,
+        endCharOffset: Int,
+        text: String,
+        quotedText: String,
+        highlightColorName: String
     ): BookAnnotation {
         val model = BookAnnotation(
             id = UUID.randomUUID().toString(),
             bookId = bookId,
             type = type,
             pageNumber = pageNumber.coerceAtLeast(1),
+            charOffset = charOffset.coerceAtLeast(0),
+            endCharOffset = endCharOffset.coerceAtLeast(0),
             text = text,
+            quotedText = quotedText,
+            highlightColorName = highlightColorName.ifBlank { HighlightColor.YELLOW.name },
             timestampLabel = "Added today",
             createdAt = System.currentTimeMillis()
         )
         annotationDao.insertAnnotation(AnnotationEntity.fromDomainModel(model))
         return model
+    }
+
+    override suspend fun updateAnnotationHighlightColor(
+        annotationId: String,
+        highlightColor: HighlightColor
+    ) {
+        annotationDao.updateAnnotationHighlightColor(
+            annotationId = annotationId,
+            highlightColorName = highlightColor.name
+        )
     }
 
     override suspend fun deleteBook(book: Book) {

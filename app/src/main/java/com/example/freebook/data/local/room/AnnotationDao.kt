@@ -18,6 +18,9 @@ interface AnnotationDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAnnotation(annotation: AnnotationEntity)
 
+    @Query("UPDATE annotations SET highlightColorName = :highlightColorName WHERE id = :annotationId")
+    suspend fun updateAnnotationHighlightColor(annotationId: String, highlightColorName: String)
+
     @Query("DELETE FROM annotations WHERE id = :annotationId")
     suspend fun deleteAnnotationById(annotationId: String)
 }

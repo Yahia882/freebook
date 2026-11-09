@@ -1,5 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.Freebook" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.Freebook" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:isLightTheme">true</item>
+        <item name="android:actionModeBackground">@color/action_mode_bg_light</item>
+        <item name="android:colorBackgroundFloating">@color/action_mode_bg_light</item>
+        <item name="android:popupBackground">@color/action_mode_bg_light</item>
+        <item name="android:textColorPrimary">@color/action_mode_text_light</item>
+        <item name="android:actionMenuTextColor">@color/action_mode_text_light</item>
+    </style>
+
+    <style name="Theme.Freebook.Light" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:isLightTheme">true</item>
+        <item name="android:actionModeBackground">@color/action_mode_bg_light</item>
+        <item name="android:colorBackgroundFloating">@color/action_mode_bg_light</item>
+        <item name="android:popupBackground">@color/action_mode_bg_light</item>
+        <item name="android:textColorPrimary">@color/action_mode_text_light</item>
+        <item name="android:actionMenuTextColor">@color/action_mode_text_light</item>
+    </style>
+
+    <style name="Theme.Freebook.Dark" parent="android:Theme.Material.NoActionBar">
+        <item name="android:isLightTheme">false</item>
+        <item name="android:actionModeBackground">@color/action_mode_bg_dark</item>
+        <item name="android:colorBackgroundFloating">@color/action_mode_bg_dark</item>
+        <item name="android:popupBackground">@color/action_mode_bg_dark</item>
+        <item name="android:textColorPrimary">@color/action_mode_text_dark</item>
+        <item name="android:actionMenuTextColor">@color/action_mode_text_dark</item>
+    </style>
 </resources>

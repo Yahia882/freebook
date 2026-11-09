@@ -5,12 +5,11 @@ import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.example.freebook.model.Book
+import com.example.freebook.model.BookReadingDirection
+import com.example.freebook.model.PublicationLayoutType
 
 /**
- * Storage Tool #2: Room Relational Entity for Book Metadata & Progress.
- * Note:
- * - `contentHash` is uniquely indexed (`unique = true`) to enforce objective content identity.
- * - Never stores large book text or cover bytes — only `bookFilePath`, `textContentFilePath`, and `coverImagePath`.
+ * Storage Tool #2: Room Relational Entity for Book Metadata & Stable Locator Progress.
  */
 @Entity(
     tableName = "books",
@@ -33,7 +32,11 @@ data class BookEntity(
     val currentPageIndex: Int,
     val totalPages: Int,
     @ColumnInfo(defaultValue = "0") val readingCharOffset: Int,
+    @ColumnInfo(defaultValue = "''") val locatorJson: String = "",
     val readingProgress: Float,
+    @ColumnInfo(defaultValue = "'REFLOWABLE'") val layoutType: String = PublicationLayoutType.REFLOWABLE.name,
+    @ColumnInfo(defaultValue = "'LTR'") val readingDirection: String = BookReadingDirection.LTR.name,
+    @ColumnInfo(defaultValue = "'en'") val language: String = "en",
     val isFinished: Boolean,
     val isStarted: Boolean,
     val isCustomNoteEntryOnly: Boolean,
@@ -52,7 +55,13 @@ data class BookEntity(
         currentPageIndex = currentPageIndex,
         totalPages = totalPages,
         readingCharOffset = readingCharOffset,
+        locatorJson = locatorJson,
         readingProgress = readingProgress,
+        layoutType = runCatching { PublicationLayoutType.valueOf(layoutType) }
+            .getOrDefault(PublicationLayoutType.REFLOWABLE),
+        readingDirection = runCatching { BookReadingDirection.valueOf(readingDirection) }
+            .getOrDefault(BookReadingDirection.LTR),
+        language = language.ifBlank { "en" },
         isFinished = isFinished,
         isStarted = isStarted,
         isCustomNoteEntryOnly = isCustomNoteEntryOnly,
