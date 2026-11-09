@@ -201,7 +201,11 @@ fun BookNotesDetailScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = if (item.type == AnnotationType.HIGHLIGHT) "HIGHLIGHT" else "NOTE",
+                                    text = when (item.type) {
+                                        AnnotationType.HIGHLIGHT -> "HIGHLIGHT"
+                                        AnnotationType.BOOKMARK -> "BOOKMARK"
+                                        AnnotationType.NOTE -> "NOTE"
+                                    },
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     letterSpacing = 0.9.sp,
@@ -348,7 +352,11 @@ fun BookNotesDetailScreen(
 
     // Long-press Delete Note / Highlight Confirmation Dialog
     annotationPendingDelete?.let { targetAnn ->
-        val label = if (targetAnn.type == AnnotationType.HIGHLIGHT) "Highlight" else "Note"
+        val label = when (targetAnn.type) {
+            AnnotationType.HIGHLIGHT -> "Highlight"
+            AnnotationType.BOOKMARK -> "Bookmark"
+            AnnotationType.NOTE -> "Note"
+        }
         AlertDialog(
             onDismissRequest = { annotationPendingDelete = null },
             containerColor = palette.menuSurface,

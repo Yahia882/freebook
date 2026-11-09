@@ -1,11 +1,15 @@
 package com.example.freebook.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,6 +36,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,8 +46,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -77,6 +85,8 @@ fun LibraryScreen(
     modifier: Modifier = Modifier
 ) {
     val palette = LocalBookFreePalette.current
+    val focusManager = LocalFocusManager.current
+    val searchFocusRequester = remember { FocusRequester() }
     var selectedFilterName by rememberSaveable { mutableStateOf(LibraryFilter.ALL.name) }
     val selectedFilter = remember(selectedFilterName) {
         runCatching { LibraryFilter.valueOf(selectedFilterName) }.getOrDefault(LibraryFilter.ALL)
@@ -84,6 +94,26 @@ fun LibraryScreen(
     var isSearchActive by rememberSaveable { mutableStateOf(false) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var bookPendingDelete by remember { mutableStateOf<Book?>(null) }
+
+    fun abandonSearch() {
+        if (isSearchActive) {
+            focusManager.clearFocus()
+            isSearchActive = false
+            searchQuery = ""
+        }
+    }
+
+    BackHandler(enabled = isSearchActive) {
+        abandonSearch()
+    }
+
+    LaunchedEffect(isSearchActive) {
+        if (isSearchActive) {
+            runCatching { searchFocusRequester.requestFocus() }
+        } else {
+            focusManager.clearFocus()
+        }
+    }
 
     val gridState = rememberLazyGridState()
 
@@ -115,6 +145,13 @@ fun LibraryScreen(
         modifier = modifier
             .fillMaxSize()
             .background(palette.appBackground)
+            .clickable(
+                enabled = isSearchActive,
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null
+            ) {
+                abandonSearch()
+            }
     ) {
         Column(
             modifier = Modifier
@@ -148,8 +185,11 @@ fun LibraryScreen(
                             .clip(CircleShape)
                             .background(if (isSearchActive) palette.borderSubtle else Color.Transparent)
                             .clickable {
-                                isSearchActive = !isSearchActive
-                                if (!isSearchActive) searchQuery = ""
+                                if (isSearchActive) {
+                                    abandonSearch()
+                                } else {
+                                    isSearchActive = true
+                                }
                             },
                         contentAlignment = Alignment.Center
                     ) {
@@ -160,7 +200,10 @@ fun LibraryScreen(
                         modifier = Modifier
                             .size(36.dp)
                             .clip(CircleShape)
-                            .clickable { onImportEpubClick() },
+                            .clickable {
+                                abandonSearch()
+                                onImportEpubClick()
+                            },
                         contentAlignment = Alignment.Center
                     ) {
                         PlusVectorIcon(color = palette.textPrimary, size = 23.dp)
@@ -185,6 +228,12 @@ fun LibraryScreen(
                         .clip(RoundedCornerShape(14.dp))
                         .background(palette.surfaceColor)
                         .border(1.dp, palette.borderSubtle, RoundedCornerShape(14.dp))
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) {
+                            runCatching { searchFocusRequester.requestFocus() }
+                        }
                         .padding(horizontal = 14.dp, vertical = 11.dp)
                 ) {
                     Row(
@@ -210,7 +259,9 @@ fun LibraryScreen(
                                     fontSize = 14.sp
                                 ),
                                 cursorBrush = SolidColor(palette.textPrimary),
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .focusRequester(searchFocusRequester)
                             )
                         }
                         if (searchQuery.isNotEmpty()) {
@@ -307,33 +358,12 @@ fun LibraryScreen(
                         Spacer(modifier = Modifier.height(8.dp))
 
                         Text(
-                            text = "Your library is empty. Import an EPUB, PDF, or TXT book from your device to begin reading.",
+                            text = "Add Epub files to begin reading",
                             fontSize = 14.sp,
                             lineHeight = 20.sp,
                             color = palette.textMuted,
                             textAlign = TextAlign.Center
                         )
-
-                        Spacer(modifier = Modifier.height(22.dp))
-
-                        Row(
-                            modifier = Modifier
-                                .clip(CircleShape)
-                                .background(palette.textPrimary)
-                                .clickable { onImportEpubClick() }
-                                .padding(horizontal = 24.dp, vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            PlusVectorIcon(color = palette.appBackground, size = 18.dp)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Add Book",
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = palette.appBackground
-                            )
-                        }
                     }
                 }
             } else if (libraryBooks.isEmpty()) {
@@ -356,64 +386,103 @@ fun LibraryScreen(
                     }
                 }
             } else {
-                LazyVerticalGrid(
-                    state = gridState,
-                    columns = GridCells.Adaptive(minSize = 104.dp),
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f),
-                    contentPadding = PaddingValues(bottom = 110.dp),
-                    horizontalArrangement = Arrangement.spacedBy(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(20.dp)
-                ) {
-                    items(
-                        items = libraryBooks,
-                        key = { it.id },
-                        contentType = { "book_card" }
-                    ) { book ->
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .combinedClickable(
-                                    onClick = { onBookClick(book) },
-                                    onLongClick = { bookPendingDelete = book }
-                                )
+                        .weight(1f)
+                        .clickable(
+                            enabled = isSearchActive,
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
                         ) {
-                            BookCoverView(
-                                book = book,
-                                isThumbnail = false,
+                            abandonSearch()
+                        }
+                ) {
+                    LazyVerticalGrid(
+                        state = gridState,
+                        columns = GridCells.Adaptive(minSize = 104.dp),
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(bottom = 110.dp),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(20.dp)
+                    ) {
+                        items(
+                            items = libraryBooks,
+                            key = { it.id },
+                            contentType = { "book_card" }
+                        ) { book ->
+                            Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .aspectRatio(1f / 1.45f)
-                                    .shadow(6.dp, RoundedCornerShape(4.dp))
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = book.statusText,
-                                fontSize = 11.5.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = palette.textMuted,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                                    .combinedClickable(
+                                        onClick = {
+                                            if (isSearchActive && searchQuery.isBlank()) {
+                                                abandonSearch()
+                                            } else {
+                                                abandonSearch()
+                                                onBookClick(book)
+                                            }
+                                        },
+                                        onLongClick = { bookPendingDelete = book }
+                                    )
+                            ) {
+                                BookCoverView(
+                                    book = book,
+                                    isThumbnail = false,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .aspectRatio(1f / 1.45f)
+                                        .shadow(6.dp, RoundedCornerShape(4.dp))
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = book.statusText,
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = palette.textMuted,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
+                    }
+
+                    // When search is open and query is blank, tapping anywhere below the search bar
+                    // abandons search and returns to the normal screen
+                    if (isSearchActive && searchQuery.isBlank()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) {
+                                    abandonSearch()
+                                }
+                        )
                     }
                 }
             }
         }
 
-        // Floating Bottom Navigation Dock
-        FloatingBottomDock(
-            selectedTab = BottomNavTab.LIBRARY,
-            onSelectTab = { tab ->
-                if (tab == BottomNavTab.NOTES) {
-                    onNavigateToNotes()
-                }
-            },
+        // Floating Bottom Navigation Dock (hidden while searching so it never floats above keyboard)
+        AnimatedVisibility(
+            visible = !isSearchActive,
+            enter = fadeIn(),
+            exit = fadeOut(),
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 22.dp)
-        )
+        ) {
+            FloatingBottomDock(
+                selectedTab = BottomNavTab.LIBRARY,
+                onSelectTab = { tab ->
+                    if (tab == BottomNavTab.NOTES) {
+                        onNavigateToNotes()
+                    }
+                }
+            )
+        }
     }
 
     // Long-press Delete Book Confirmation Dialog

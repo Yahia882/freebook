@@ -132,30 +132,7 @@ fun BookCoverView(
                 overflow = TextOverflow.Ellipsis
             )
 
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
-                Canvas(
-                    modifier = Modifier.size(
-                        width = if (isThumbnail) 18.dp else 34.dp,
-                        height = if (isThumbnail) 18.dp else 34.dp
-                    )
-                ) {
-                    val strokeW = if (isThumbnail) 0.9.dp.toPx() else 1.3.dp.toPx()
-                    drawRect(
-                        color = fg.copy(alpha = 0.75f),
-                        style = Stroke(width = strokeW)
-                    )
-                    drawCircle(
-                        color = fg,
-                        radius = size.minDimension * 0.25f,
-                        center = Offset(size.width / 2f, size.height / 2f)
-                    )
-                }
-            }
+            Spacer(modifier = Modifier.weight(1f))
 
             Text(
                 text = book.author.ifBlank { "BOOKFREE EDITION" }.uppercase(),

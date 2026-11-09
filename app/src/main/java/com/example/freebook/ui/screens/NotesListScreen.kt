@@ -1,11 +1,15 @@
 package com.example.freebook.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,6 +36,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -40,8 +45,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -78,10 +86,32 @@ fun NotesListScreen(
     modifier: Modifier = Modifier
 ) {
     val palette = LocalBookFreePalette.current
+    val focusManager = LocalFocusManager.current
+    val searchFocusRequester = remember { FocusRequester() }
     var isSearchActive by rememberSaveable { mutableStateOf(false) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var showAddBookNoteDialog by rememberSaveable { mutableStateOf(false) }
     var bookPendingDelete by remember { mutableStateOf<Book?>(null) }
+
+    fun abandonSearch() {
+        if (isSearchActive) {
+            focusManager.clearFocus()
+            isSearchActive = false
+            searchQuery = ""
+        }
+    }
+
+    BackHandler(enabled = isSearchActive) {
+        abandonSearch()
+    }
+
+    LaunchedEffect(isSearchActive) {
+        if (isSearchActive) {
+            runCatching { searchFocusRequester.requestFocus() }
+        } else {
+            focusManager.clearFocus()
+        }
+    }
 
     val listState = rememberLazyListState()
 
@@ -109,6 +139,13 @@ fun NotesListScreen(
         modifier = modifier
             .fillMaxSize()
             .background(palette.appBackground)
+            .clickable(
+                enabled = isSearchActive,
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null
+            ) {
+                abandonSearch()
+            }
     ) {
         Column(
             modifier = Modifier
@@ -142,8 +179,11 @@ fun NotesListScreen(
                             .clip(CircleShape)
                             .background(if (isSearchActive) palette.borderSubtle else Color.Transparent)
                             .clickable {
-                                isSearchActive = !isSearchActive
-                                if (!isSearchActive) searchQuery = ""
+                                if (isSearchActive) {
+                                    abandonSearch()
+                                } else {
+                                    isSearchActive = true
+                                }
                             },
                         contentAlignment = Alignment.Center
                     ) {
@@ -155,6 +195,7 @@ fun NotesListScreen(
                             .size(36.dp)
                             .clip(CircleShape)
                             .clickable {
+                                abandonSearch()
                                 onClearPendingCustomCover()
                                 showAddBookNoteDialog = true
                             },
@@ -182,6 +223,12 @@ fun NotesListScreen(
                         .clip(RoundedCornerShape(14.dp))
                         .background(palette.surfaceColor)
                         .border(1.dp, palette.borderSubtle, RoundedCornerShape(14.dp))
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) {
+                            runCatching { searchFocusRequester.requestFocus() }
+                        }
                         .padding(horizontal = 14.dp, vertical = 11.dp)
                 ) {
                     Row(
@@ -207,7 +254,9 @@ fun NotesListScreen(
                                     fontSize = 14.sp
                                 ),
                                 cursorBrush = SolidColor(palette.textPrimary),
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .focusRequester(searchFocusRequester)
                             )
                         }
                         if (searchQuery.isNotEmpty()) {
@@ -252,75 +301,112 @@ fun NotesListScreen(
                     }
                 }
             } else {
-                LazyColumn(
-                    state = listState,
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f),
-                    contentPadding = PaddingValues(top = 4.dp, bottom = 110.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    items(
-                        items = filteredBookEntries,
-                        key = { it.id },
-                        contentType = { "book_note_row" }
-                    ) { book ->
-                        val bookNotes = annotationsByBook[book.id].orEmpty()
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .combinedClickable(
-                                    onClick = { onBookNoteClick(book) },
-                                    onLongClick = { bookPendingDelete = book }
-                                )
-                                .padding(vertical = 6.dp, horizontal = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                        .weight(1f)
+                        .clickable(
+                            enabled = isSearchActive,
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
                         ) {
-                            BookCoverView(
-                                book = book,
-                                isThumbnail = true,
+                            abandonSearch()
+                        }
+                ) {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(top = 4.dp, bottom = 110.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        items(
+                            items = filteredBookEntries,
+                            key = { it.id },
+                            contentType = { "book_note_row" }
+                        ) { book ->
+                            val bookNotes = annotationsByBook[book.id].orEmpty()
+                            Row(
                                 modifier = Modifier
-                                    .width(44.dp)
-                                    .height(58.dp)
-                            )
-
-                            Spacer(modifier = Modifier.width(16.dp))
-
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = book.title,
-                                    fontSize = 17.sp,
-                                    fontWeight = FontWeight.Normal,
-                                    color = palette.textPrimary.copy(alpha = 0.92f),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .combinedClickable(
+                                        onClick = {
+                                            if (isSearchActive && searchQuery.isBlank()) {
+                                                abandonSearch()
+                                            } else {
+                                                abandonSearch()
+                                                onBookNoteClick(book)
+                                            }
+                                        },
+                                        onLongClick = { bookPendingDelete = book }
+                                    )
+                                    .padding(vertical = 6.dp, horizontal = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                BookCoverView(
+                                    book = book,
+                                    isThumbnail = true,
+                                    modifier = Modifier
+                                        .width(44.dp)
+                                        .height(58.dp)
                                 )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = "${bookNotes.size} ${if (bookNotes.size == 1) "entry" else "entries"}",
-                                    fontSize = 12.sp,
-                                    color = palette.textMuted
-                                )
+
+                                Spacer(modifier = Modifier.width(16.dp))
+
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = book.title,
+                                        fontSize = 17.sp,
+                                        fontWeight = FontWeight.Normal,
+                                        color = palette.textPrimary.copy(alpha = 0.92f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "${bookNotes.size} ${if (bookNotes.size == 1) "Note" else "Notes"}",
+                                        fontSize = 12.sp,
+                                        color = palette.textMuted
+                                    )
+                                }
                             }
                         }
+                    }
+
+                    if (isSearchActive && searchQuery.isBlank()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) {
+                                    abandonSearch()
+                                }
+                        )
                     }
                 }
             }
         }
 
-        // Floating Bottom Navigation Dock
-        FloatingBottomDock(
-            selectedTab = BottomNavTab.NOTES,
-            onSelectTab = { tab ->
-                if (tab == BottomNavTab.LIBRARY) {
-                    onNavigateToLibrary()
-                }
-            },
+        // Floating Bottom Navigation Dock (hidden while searching so it never floats above keyboard)
+        AnimatedVisibility(
+            visible = !isSearchActive,
+            enter = fadeIn(),
+            exit = fadeOut(),
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 22.dp)
-        )
+        ) {
+            FloatingBottomDock(
+                selectedTab = BottomNavTab.NOTES,
+                onSelectTab = { tab ->
+                    if (tab == BottomNavTab.LIBRARY) {
+                        onNavigateToLibrary()
+                    }
+                }
+            )
+        }
     }
 
     // Dialog to add a new Book Note Entry with unified default/custom cover

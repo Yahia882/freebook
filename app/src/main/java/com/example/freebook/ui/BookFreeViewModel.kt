@@ -222,9 +222,13 @@ class BookFreeViewModel(
                 text = text
             )
             if (showToast) {
-                val label = if (type == AnnotationType.HIGHLIGHT) "Highlight" else "Note"
+                val label = when (type) {
+                    AnnotationType.HIGHLIGHT -> "Highlight"
+                    AnnotationType.BOOKMARK -> "Bookmark"
+                    AnnotationType.NOTE -> "Note"
+                }
                 transientState.update {
-                    it.copy(toastMessage = "$label synced to Notes (Page $pageNumber)")
+                    it.copy(toastMessage = "$label saved (Page $pageNumber)")
                 }
             }
         }
@@ -242,7 +246,11 @@ class BookFreeViewModel(
     fun deleteAnnotation(annotation: BookAnnotation) {
         viewModelScope.launch {
             bookRepository.deleteAnnotation(annotation.id)
-            val label = if (annotation.type == AnnotationType.HIGHLIGHT) "Highlight" else "Note"
+            val label = when (annotation.type) {
+                AnnotationType.HIGHLIGHT -> "Highlight"
+                AnnotationType.BOOKMARK -> "Bookmark"
+                AnnotationType.NOTE -> "Note"
+            }
             transientState.update {
                 it.copy(toastMessage = "$label deleted")
             }

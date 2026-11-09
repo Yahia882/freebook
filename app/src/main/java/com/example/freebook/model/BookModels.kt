@@ -4,7 +4,8 @@ import java.util.UUID
 
 enum class AnnotationType {
     HIGHLIGHT,
-    NOTE
+    NOTE,
+    BOOKMARK
 }
 
 enum class LibraryFilter(val label: String) {
@@ -18,9 +19,9 @@ enum class LibraryFilter(val label: String) {
  * and the reading position is preserved via character offset.
  */
 enum class ReaderTextSize(val label: String, val sp: Float) {
-    NORMAL("Normal", 18f),
-    LARGE("Large", 21f),
-    EXTRA_LARGE("Extra Large", 24f);
+    NORMAL("Normal", 17f),
+    LARGE("Large", 19.5f),
+    EXTRA_LARGE("Extra Large", 22f);
 
     companion object {
         fun fromSp(value: Float): ReaderTextSize =

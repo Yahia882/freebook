@@ -14,8 +14,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -175,7 +177,7 @@ fun BookFreeApp(
                         palette.appBackground
                     }
                 )
-                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.displayCutout))
         ) {
             when (val dest = currentScreen) {
                 ScreenDestination.Library -> {
@@ -290,9 +292,11 @@ fun BookFreeApp(
                         BookReaderScreen(
                             book = book,
                             bookAnnotations = bookAnnotations,
+                            isDarkTheme = isDarkTheme,
                             fontSizeSp = fontSizeSp,
                             enablePageAnimations = enablePageAnimations,
                             loadBookText = { targetBook -> viewModel.loadBookText(targetBook) },
+                            onToggleTheme = { viewModel.setDarkTheme(it) },
                             onFontSizeChange = { newSize -> viewModel.setFontSizeSp(newSize) },
                             onPageChanged = { charOffset, totalChars, pageIndex, pageCount ->
                                 viewModel.updateReadingProgress(

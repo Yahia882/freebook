@@ -64,7 +64,9 @@ object ViewportPaginator {
         availableHeightPx: Int
     ): PageLayout {
         val total = cleanedText.length
-        if (total == 0 || availableWidthPx <= 60 || availableHeightPx <= 60) {
+        val bottomSafetyMarginPx = (density.density * 18f).toInt().coerceAtLeast(12)
+        val safeAvailableHeightPx = availableHeightPx - bottomSafetyMarginPx
+        if (total == 0 || availableWidthPx <= 60 || safeAvailableHeightPx <= 60) {
             return PageLayout(cleanedText, intArrayOf(0), intArrayOf(total))
         }
 
@@ -88,22 +90,50 @@ object ViewportPaginator {
 
             var lastFittingLine = 0
             for (line in 0 until layout.lineCount) {
-                if (layout.getLineBottom(line) <= availableHeightPx) lastFittingLine = line else break
+                if (layout.getLineBottom(line) <= safeAvailableHeightPx) {
+                    lastFittingLine = line
+                } else {
+                    break
+                }
             }
 
-            var sliceEnd = layout.getLineEnd(lastFittingLine, visibleEnd = true)
-                .coerceIn(1, windowText.length)
-
-            // Don't split a word across pages (unless the window ends the book).
-            if (windowEnd < total || sliceEnd < windowText.length) {
-                if (sliceEnd < windowText.length &&
-                    !windowText[sliceEnd - 1].isWhitespace() &&
-                    !windowText[sliceEnd].isWhitespace()
-                ) {
-                    val lineStart = layout.getLineStart(lastFittingLine)
-                    val lastSpace = windowText.lastIndexOf(' ', startIndex = sliceEnd - 1)
-                    if (lastSpace > lineStart) sliceEnd = lastSpace + 1
+            fun computeSliceEndForLine(targetLine: Int): Int {
+                var end = layout.getLineEnd(targetLine, visibleEnd = true)
+                    .coerceIn(1, windowText.length)
+                if (windowEnd < total || end < windowText.length) {
+                    if (end < windowText.length &&
+                        !windowText[end - 1].isWhitespace() &&
+                        !windowText[end].isWhitespace()
+                    ) {
+                        val lineStart = layout.getLineStart(targetLine)
+                        val lastSpace = windowText.lastIndexOf(' ', startIndex = end - 1)
+                        if (lastSpace > lineStart) end = lastSpace + 1
+                    }
                 }
+                return end
+            }
+
+            var sliceEnd = computeSliceEndForLine(lastFittingLine)
+
+            // Verify standalone page measurement so the bottom line is never clipped or dropped
+            while (lastFittingLine > 0) {
+                val candidatePageText = windowText.substring(0, sliceEnd).trimEnd()
+                val pageCheckLayout = textMeasurer.measure(
+                    text = AnnotatedString(candidatePageText),
+                    style = textStyle,
+                    constraints = Constraints(maxWidth = availableWidthPx),
+                    density = density
+                )
+                val checkBottom = if (pageCheckLayout.lineCount > 0) {
+                    pageCheckLayout.getLineBottom(pageCheckLayout.lineCount - 1)
+                } else {
+                    0f
+                }
+                if (pageCheckLayout.size.height <= availableHeightPx && checkBottom <= safeAvailableHeightPx) {
+                    break
+                }
+                lastFittingLine--
+                sliceEnd = computeSliceEndForLine(lastFittingLine)
             }
 
             starts.add(cursor)
