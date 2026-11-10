@@ -1005,7 +1005,7 @@ fun BookReaderScreen(
                             ) {
                                 HorizontalDivider(color = palette.borderSubtle, thickness = 1.dp)
 
-                                // 1. "Themes" Button -> Opens Bottom Sheet with Navigation Mode, Text Size steps & 4 Color Themes
+                                // 1. "Theme & Settings" Button -> Opens Bottom Sheet with Navigation Mode, Text Size steps & 4 Color Themes
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -1017,49 +1017,37 @@ fun BookReaderScreen(
                                         }
                                         .padding(horizontal = 14.dp, vertical = 12.dp),
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    Box(
+                                        modifier = Modifier
+                                            .size(22.dp)
+                                            .clip(CircleShape)
+                                            .background(readerBgColor)
+                                            .border(1.dp, palette.textMuted, CircleShape),
+                                        contentAlignment = Alignment.Center
                                     ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(22.dp)
-                                                .clip(CircleShape)
-                                                .background(readerBgColor)
-                                                .border(1.dp, palette.textMuted, CircleShape),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text(
-                                                text = "A",
-                                                fontFamily = FontFamily.Serif,
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = readerTextColor
-                                            )
-                                        }
-                                        Column {
-                                            Text(
-                                                text = "Themes",
-                                                fontSize = 14.sp,
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = palette.textPrimary
-                                            )
-                                            Text(
-                                                text = "${activeReaderTheme.label} • ${preferences.fontSizeStep.friendlyName} (${preferences.fontSizeStep.multiplier}×)",
-                                                fontSize = 11.5.sp,
-                                                color = palette.textMuted
-                                            )
-                                        }
+                                        Text(
+                                            text = "A",
+                                            fontFamily = FontFamily.Serif,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = readerTextColor
+                                        )
                                     }
-
-                                    Text(
-                                        text = "Customize",
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        color = palette.textSecondary
-                                    )
+                                    Column {
+                                        Text(
+                                            text = "Theme & Settings",
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = palette.textPrimary
+                                        )
+                                        Text(
+                                            text = "${activeReaderTheme.label} • ${preferences.fontSizeStep.friendlyName} (${preferences.fontSizeStep.multiplier}×)",
+                                            fontSize = 11.5.sp,
+                                            color = palette.textMuted
+                                        )
+                                    }
                                 }
 
                                 // 2. "Bookmarks & Highlights" Button (shows Bookmarks, Highlights, and Notes)

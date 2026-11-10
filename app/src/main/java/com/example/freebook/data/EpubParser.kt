@@ -190,13 +190,18 @@ object EpubParser {
                     }
 
                     // Extract cover bitmap from Readium's CoverService if available
-                    var coverPath: String? = null
+                    var coverPath: String?
                     val coverBitmap = runCatching { publication.cover() }.getOrNull()
                     if (coverBitmap != null) {
                         val out = ByteArrayOutputStream()
                         @Suppress("DEPRECATION")
                         coverBitmap.compress(Bitmap.CompressFormat.WEBP, 86, out)
                         coverPath = fileStorage.saveCoverImageBytes(out.toByteArray())
+                    } else {
+                        // Fallback to manual zip extraction if Readium's cover() misses the metadata
+                        coverPath = runCatching {
+                            parseZipEpubFallback(rawBytes, fallbackTitle, fileStorage).coverImagePath
+                        }.getOrNull()
                     }
 
                     // Extract spine text in readingOrder via Readium Resource API
