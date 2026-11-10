@@ -25,7 +25,6 @@ interface BookFileStorage {
         textContentFilePath: String?,
         coverImagePath: String?
     )
-    suspend fun cleanupLegacyDemoFile()
 }
 
 class InternalBookFileStorage(
@@ -108,12 +107,5 @@ class InternalBookFileStorage(
                     if (file.exists()) file.delete()
                 }
             }
-    }
-
-    override suspend fun cleanupLegacyDemoFile() = withContext(Dispatchers.IO) {
-        val legacyFile = File(context.filesDir, "bookfree_state_v1.json")
-        if (legacyFile.exists()) {
-            runCatching { legacyFile.delete() }
-        }
     }
 }
