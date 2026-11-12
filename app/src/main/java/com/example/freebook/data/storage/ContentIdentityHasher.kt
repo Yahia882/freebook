@@ -36,8 +36,12 @@ object ContentIdentityHasher {
     }
 
     fun sha256Hex(normalizedText: String): String {
+        return sha256BytesHex(normalizedText.toByteArray(Charsets.UTF_8))
+    }
+
+    fun sha256BytesHex(bytes: ByteArray): String {
         val digest = MessageDigest.getInstance("SHA-256")
-        val hashBytes = digest.digest(normalizedText.toByteArray(Charsets.UTF_8))
+        val hashBytes = digest.digest(bytes)
         return buildString(hashBytes.size * 2) {
             for (b in hashBytes) {
                 append(String.format(Locale.US, "%02x", b))

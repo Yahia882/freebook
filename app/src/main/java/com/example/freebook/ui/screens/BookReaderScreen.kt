@@ -102,6 +102,7 @@ import com.example.freebook.ui.components.CloseCrossIcon
 import com.example.freebook.ui.components.NotePencilIcon
 import com.example.freebook.ui.components.SearchVectorIcon
 import com.example.freebook.ui.reader.ReadiumActionModeSession
+import com.example.freebook.ui.reader.ReadiumPdfReaderHost
 import com.example.freebook.ui.reader.ReadiumSelectionWebView
 import com.example.freebook.ui.reader.ReadiumWebViewNavigator
 import com.example.freebook.ui.theme.LocalBookFreePalette
@@ -136,7 +137,14 @@ fun BookReaderScreen(
     onSelectPublisherStyles: (Boolean) -> Unit,
     onSelectNavigationMode: (ReaderNavigationMode) -> Unit,
     onSelectFixedLayoutFitMode: (FixedLayoutFitMode) -> Unit,
-    onLocatorChanged: (charOffset: Int, totalChars: Int, derivedPosition: Int, derivedTotalPositions: Int) -> Unit,
+    onLocatorChanged: (
+        charOffset: Int,
+        totalChars: Int,
+        derivedPosition: Int,
+        derivedTotalPositions: Int,
+        rawLocatorJson: String?,
+        explicitProgressPercent: Float?
+    ) -> Unit,
     onAddAnnotation: (
         type: AnnotationType,
         pageNumber: Int,
@@ -179,7 +187,13 @@ fun BookReaderScreen(
     }
 
     var isWebViewDocumentReady by remember(book.id) { mutableStateOf(false) }
-    val isBookContentLoaded = canonicalBookText.isNotEmpty() && isWebViewDocumentReady
+    var isPdfDocumentReady by remember(book.id) { mutableStateOf(false) }
+    var pdfJumpToPage by remember(book.id) { mutableStateOf<((Int) -> Unit)?>(null) }
+    val isBookContentLoaded = if (book.layoutType == PublicationLayoutType.FIXED) {
+        isPdfDocumentReady
+    } else {
+        canonicalBookText.isNotEmpty() && isWebViewDocumentReady
+    }
 
     // Stable locator state (canonical character offset, derived position, derived total positions)
     var currentCharOffset by rememberSaveable(book.id) {
@@ -193,6 +207,10 @@ fun BookReaderScreen(
     }
     var currentVisibleText by remember { mutableStateOf("") }
     var isInitialPositionRestored by remember(book.id) { mutableStateOf(false) }
+    var currentPdfLocatorJson by rememberSaveable(book.id) { mutableStateOf(book.locatorJson) }
+    var currentPdfProgressPercent by rememberSaveable(book.id) {
+        mutableFloatStateOf(book.readingProgress.coerceIn(0.1f, 100f))
+    }
 
     LaunchedEffect(book.id, canonicalBookText.length) {
         if (canonicalBookText.isNotEmpty() && !isInitialPositionRestored && currentCharOffset == 0) {
@@ -204,13 +222,21 @@ fun BookReaderScreen(
     }
 
     val readingPercent by remember(
+        book.layoutType,
+        currentPdfProgressPercent,
         currentCharOffset,
         canonicalBookText.length,
         derivedCurrentPosition,
         derivedTotalPositions
     ) {
         derivedStateOf {
-            if (canonicalBookText.isEmpty()) {
+            if (book.layoutType == PublicationLayoutType.FIXED) {
+                if (derivedTotalPositions > 1 && derivedCurrentPosition >= derivedTotalPositions) {
+                    100f
+                } else {
+                    currentPdfProgressPercent.coerceIn(0.1f, 99.9f)
+                }
+            } else if (canonicalBookText.isEmpty()) {
                 0.1f
             } else if (derivedTotalPositions > 1 && derivedCurrentPosition >= derivedTotalPositions) {
                 100f
@@ -245,6 +271,9 @@ fun BookReaderScreen(
     val latestDerivedPos by rememberUpdatedState(derivedCurrentPosition)
     val latestDerivedTotalPos by rememberUpdatedState(derivedTotalPositions)
     val latestIsRestored by rememberUpdatedState(isInitialPositionRestored)
+    val latestIsPdfReady by rememberUpdatedState(isPdfDocumentReady)
+    val latestPdfLocatorJson by rememberUpdatedState(currentPdfLocatorJson)
+    val latestPdfProgressPercent by rememberUpdatedState(currentPdfProgressPercent)
     val latestOnLocatorChanged by rememberUpdatedState(onLocatorChanged)
     val latestOnAddAnnotation by rememberUpdatedState(onAddAnnotation)
     val latestCanonicalText by rememberUpdatedState(canonicalBookText)
@@ -286,7 +315,9 @@ fun BookReaderScreen(
                     offset,
                     latestTotalChars,
                     (posOneBased - 1).coerceAtLeast(0),
-                    totalPos
+                    totalPos,
+                    null,
+                    null
                 )
             }
         },
@@ -410,12 +441,25 @@ fun BookReaderScreen(
 
     // Flush current locator when exiting the reader or when the app goes to background
     fun flushCurrentLocator() {
-        if (latestIsRestored && latestTotalChars > 0) {
+        if (book.layoutType == PublicationLayoutType.FIXED) {
+            if (latestIsPdfReady && latestPdfLocatorJson.isNotBlank()) {
+                latestOnLocatorChanged(
+                    latestCharOffset,
+                    latestTotalChars.coerceAtLeast(100),
+                    (latestDerivedPos - 1).coerceAtLeast(0),
+                    latestDerivedTotalPos,
+                    latestPdfLocatorJson,
+                    latestPdfProgressPercent
+                )
+            }
+        } else if (latestIsRestored && latestTotalChars > 0) {
             latestOnLocatorChanged(
                 latestCharOffset,
                 latestTotalChars,
                 (latestDerivedPos - 1).coerceAtLeast(0),
-                latestDerivedTotalPos
+                latestDerivedTotalPos,
+                null,
+                null
             )
         }
     }
@@ -434,6 +478,12 @@ fun BookReaderScreen(
     }
 
     fun jumpToLocator(targetCharOffset: Int, fallbackPageNumber: Int) {
+        if (book.layoutType == PublicationLayoutType.FIXED) {
+            val targetPage = if (fallbackPageNumber > 0) fallbackPageNumber else 1
+            pdfJumpToPage?.invoke(targetPage)
+            derivedCurrentPosition = targetPage.coerceIn(1, derivedTotalPositions)
+            return
+        }
         if (canonicalBookText.isEmpty()) return
         val resolvedOffset = if (targetCharOffset > 0 || fallbackPageNumber <= 1) {
             targetCharOffset.coerceIn(0, (canonicalBookText.length - 1).coerceAtLeast(0))
@@ -469,9 +519,46 @@ fun BookReaderScreen(
         contentAlignment = Alignment.Center
     ) {
         // =========================================================================
-        // READIUM WEBVIEW HOST (Managed by ReadiumWebViewNavigator : DecorableNavigator)
+        // READIUM READER HOST (Fixed-Layout PDF via PdfNavigatorFragment vs Reflowable EPUB via WebView)
         // =========================================================================
-        if (canonicalBookText.isNotEmpty()) {
+        if (book.layoutType == PublicationLayoutType.FIXED) {
+            ReadiumPdfReaderHost(
+                book = book,
+                navigationMode = preferences.navigationMode,
+                onDocumentReady = { totalPages ->
+                    derivedTotalPositions = totalPages
+                    isPdfDocumentReady = true
+                },
+                onLocatorChanged = { locatorJson, pageNumber, totalPages, progressPercent ->
+                    derivedCurrentPosition = pageNumber
+                    derivedTotalPositions = totalPages
+                    currentPdfLocatorJson = locatorJson
+                    currentPdfProgressPercent = progressPercent
+                    val safeTotal = totalPages.coerceAtLeast(1)
+                    val safeTextLen = canonicalBookText.length.coerceAtLeast(100)
+                    val pseudoOffset = ((pageNumber - 1).toFloat() / safeTotal.toFloat() * safeTextLen).toInt()
+                    currentCharOffset = pseudoOffset
+                    currentVisibleText = "Page $pageNumber of ${book.title}"
+                    latestOnLocatorChanged(
+                        pseudoOffset,
+                        safeTextLen,
+                        (pageNumber - 1).coerceAtLeast(0),
+                        totalPages,
+                        locatorJson,
+                        progressPercent
+                    )
+                },
+                onSingleTap = {
+                    isActiveReaderHudVisible = !isActiveReaderHudVisible
+                },
+                onBindNavigator = { jumper ->
+                    pdfJumpToPage = jumper
+                },
+                modifier = Modifier
+                    .widthIn(max = 820.dp)
+                    .fillMaxSize()
+            )
+        } else if (canonicalBookText.isNotEmpty()) {
             val initialHtml = remember(book.id, canonicalBookText) {
                 val initialOffset = book.resolveSavedCharOffset(canonicalBookText.length)
                 ReadiumWebViewNavigator.buildReadiumDocumentHtml(
@@ -991,7 +1078,9 @@ fun BookReaderScreen(
                             }
                         }
 
-                        // Extended Options: "Themes" Button + "Bookmarks & Highlights" Button
+                        // Extended Options: Side-by-side Row
+                        // - EPUB: Left = "Theme & Settings" (no subtitle), Right = "Notebook"
+                        // - PDF:  Left = Scroll / Swipe toggle button, Right = "Notebook"
                         AnimatedVisibility(
                             visible = isBottomBarExpanded,
                             enter = expandVertically() + fadeIn(),
@@ -1005,94 +1094,165 @@ fun BookReaderScreen(
                             ) {
                                 HorizontalDivider(color = palette.borderSubtle, thickness = 1.dp)
 
-                                // 1. "Theme & Settings" Button -> Opens Bottom Sheet with Navigation Mode, Text Size steps & 4 Color Themes
                                 Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(14.dp))
-                                        .background(palette.surfaceColor)
-                                        .border(1.dp, palette.borderSubtle, RoundedCornerShape(14.dp))
-                                        .clickable {
-                                            showThemesBottomSheet = true
-                                        }
-                                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                                    modifier = Modifier.fillMaxWidth(),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(22.dp)
-                                            .clip(CircleShape)
-                                            .background(readerBgColor)
-                                            .border(1.dp, palette.textMuted, CircleShape),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text(
-                                            text = "A",
-                                            fontFamily = FontFamily.Serif,
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = readerTextColor
-                                        )
-                                    }
-                                    Column {
-                                        Text(
-                                            text = "Theme & Settings",
-                                            fontSize = 14.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = palette.textPrimary
-                                        )
-                                        Text(
-                                            text = "${activeReaderTheme.label} • ${preferences.fontSizeStep.friendlyName} (${preferences.fontSizeStep.multiplier}×)",
-                                            fontSize = 11.5.sp,
-                                            color = palette.textMuted
-                                        )
-                                    }
-                                }
-
-                                // 2. "Bookmarks & Highlights" Button (shows Bookmarks, Highlights, and Notes)
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(14.dp))
-                                        .background(palette.surfaceColor)
-                                        .border(1.dp, palette.borderSubtle, RoundedCornerShape(14.dp))
-                                        .clickable {
-                                            showBookmarksAndHighlightsDialog = true
+                                    // 1. LEFT BUTTON: "Theme & Settings" (EPUB) OR "Swipe / Scroll" Toggle (PDF)
+                                    if (book.layoutType == PublicationLayoutType.REFLOWABLE) {
+                                        Row(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(48.dp)
+                                                .clip(RoundedCornerShape(14.dp))
+                                                .background(palette.surfaceColor)
+                                                .border(1.dp, palette.borderSubtle, RoundedCornerShape(14.dp))
+                                                .clickable {
+                                                    showThemesBottomSheet = true
+                                                }
+                                                .padding(horizontal = 12.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(22.dp)
+                                                    .clip(CircleShape)
+                                                    .background(readerBgColor)
+                                                    .border(1.dp, palette.textMuted, CircleShape),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    text = "A",
+                                                    fontFamily = FontFamily.Serif,
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = readerTextColor
+                                                )
+                                            }
+                                            Text(
+                                                text = "Theme & Settings",
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = palette.textPrimary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
                                         }
-                                        .padding(horizontal = 14.dp, vertical = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                    ) {
-                                        BookmarkRibbonIcon(
-                                            color = palette.textPrimary,
-                                            filled = allBookAnnotationsSorted.isNotEmpty(),
-                                            size = 18.dp
-                                        )
-                                        Text(
-                                            text = "Bookmarks & Highlights",
-                                            fontSize = 14.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = palette.textPrimary
-                                        )
+                                    } else {
+                                        val isScrollMode =
+                                            preferences.navigationMode == ReaderNavigationMode.VERTICAL_SCROLL
+                                        Row(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(48.dp)
+                                                .clip(RoundedCornerShape(14.dp))
+                                                .background(palette.surfaceColor)
+                                                .border(1.dp, palette.borderSubtle, RoundedCornerShape(14.dp))
+                                                .clickable {
+                                                    val nextMode = if (isScrollMode) {
+                                                        ReaderNavigationMode.HORIZONTAL_SWIPE
+                                                    } else {
+                                                        ReaderNavigationMode.VERTICAL_SCROLL
+                                                    }
+                                                    onSelectNavigationMode(nextMode)
+                                                }
+                                                .padding(4.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .fillMaxSize()
+                                                    .clip(RoundedCornerShape(10.dp))
+                                                    .background(
+                                                        if (!isScrollMode) palette.dockTabActiveBg
+                                                        else Color.Transparent
+                                                    ),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    text = "Swipe",
+                                                    fontSize = 13.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = if (!isScrollMode) palette.dockTabActiveText
+                                                    else palette.textMuted,
+                                                    maxLines = 1
+                                                )
+                                            }
+                                            Box(
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .fillMaxSize()
+                                                    .clip(RoundedCornerShape(10.dp))
+                                                    .background(
+                                                        if (isScrollMode) palette.dockTabActiveBg
+                                                        else Color.Transparent
+                                                    ),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    text = "Scroll",
+                                                    fontSize = 13.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = if (isScrollMode) palette.dockTabActiveText
+                                                    else palette.textMuted,
+                                                    maxLines = 1
+                                                )
+                                            }
+                                        }
                                     }
 
-                                    Box(
+                                    // 2. RIGHT BUTTON: "Notebook" (Bookmarks, Highlights, and Notes)
+                                    Row(
                                         modifier = Modifier
-                                            .clip(CircleShape)
-                                            .background(palette.dockTabActiveBg)
-                                            .padding(horizontal = 10.dp, vertical = 3.dp)
+                                            .weight(1f)
+                                            .height(48.dp)
+                                            .clip(RoundedCornerShape(14.dp))
+                                            .background(palette.surfaceColor)
+                                            .border(1.dp, palette.borderSubtle, RoundedCornerShape(14.dp))
+                                            .clickable {
+                                                showBookmarksAndHighlightsDialog = true
+                                            }
+                                            .padding(horizontal = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
                                     ) {
-                                        Text(
-                                            text = "${allBookAnnotationsSorted.size}",
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = palette.dockTabActiveText
-                                        )
+                                        Row(
+                                            modifier = Modifier.weight(1f, fill = false),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            BookmarkRibbonIcon(
+                                                color = palette.textPrimary,
+                                                filled = allBookAnnotationsSorted.isNotEmpty(),
+                                                size = 17.dp
+                                            )
+                                            Text(
+                                                text = "Notebook",
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = palette.textPrimary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(CircleShape)
+                                                .background(palette.dockTabActiveBg)
+                                                .padding(horizontal = 9.dp, vertical = 2.dp)
+                                        ) {
+                                            Text(
+                                                text = "${allBookAnnotationsSorted.size}",
+                                                fontSize = 11.5.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = palette.dockTabActiveText
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -1103,9 +1263,9 @@ fun BookReaderScreen(
         }
 
         // =========================================================================
-        // MODAL BOTTOM SHEET: "Themes & Typography"
+        // MODAL BOTTOM SHEET: "Themes & Typography" (Reflowable EPUBs only)
         // =========================================================================
-        if (showThemesBottomSheet) {
+        if (showThemesBottomSheet && book.layoutType == PublicationLayoutType.REFLOWABLE) {
             val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
             ModalBottomSheet(
                 onDismissRequest = { showThemesBottomSheet = false },
@@ -1518,7 +1678,7 @@ fun BookReaderScreen(
                 title = {
                     Column {
                         Text(
-                            text = "Bookmarks, Highlights & Notes",
+                            text = "Notebook",
                             fontSize = 18.sp,
                             fontWeight = FontWeight.SemiBold
                         )

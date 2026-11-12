@@ -14,7 +14,7 @@ import android.view.ViewTreeObserver
 import android.view.inspector.WindowInspector
 import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -112,7 +112,7 @@ private val ScreenDestinationSaver: Saver<ScreenDestination, List<String>> = Sav
     }
 )
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
 
     private var activeActionModeSession: ReadiumActionModeSession? = null
     private var currentActionMode: ActionMode? = null
@@ -542,13 +542,15 @@ fun BookFreeApp(
                             onSelectPublisherStyles = { viewModel.setPublisherStyles(it) },
                             onSelectNavigationMode = { viewModel.setNavigationMode(it) },
                             onSelectFixedLayoutFitMode = { viewModel.setFixedLayoutFitMode(it) },
-                            onLocatorChanged = { charOffset, totalChars, derivedPosIdx, derivedPosCount ->
+                            onLocatorChanged = { charOffset, totalChars, derivedPosIdx, derivedPosCount, rawLocatorJson, explicitProgress ->
                                 viewModel.updateReadingLocator(
                                     bookId = book.id,
                                     charOffset = charOffset,
                                     totalChars = totalChars,
                                     derivedPositionIndex = derivedPosIdx,
-                                    derivedPositionCount = derivedPosCount
+                                    derivedPositionCount = derivedPosCount,
+                                    rawLocatorJson = rawLocatorJson,
+                                    explicitProgressPercent = explicitProgress
                                 )
                             },
                             onAddAnnotation = { type, pageNumber, charOffset, endCharOffset, text, quotedText, highlightColorName ->

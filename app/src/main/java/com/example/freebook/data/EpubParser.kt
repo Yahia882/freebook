@@ -2,11 +2,7 @@ package com.example.freebook.data
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.pdf.PdfRenderer
 import android.net.Uri
-import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import androidx.core.text.HtmlCompat
 import com.example.freebook.data.storage.BookFileStorage
@@ -16,8 +12,12 @@ import com.example.freebook.model.PublicationLayoutType
 import com.example.freebook.model.StagedBookImport
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.readium.adapter.pdfium.document.PdfiumDocumentFactory
+import org.readium.r2.shared.ExperimentalReadiumApi
+import org.readium.r2.shared.publication.Publication
 import org.readium.r2.shared.publication.ReadingProgression
 import org.readium.r2.shared.publication.services.cover
+import org.readium.r2.shared.publication.services.positions
 import org.readium.r2.shared.util.asset.AssetRetriever
 import org.readium.r2.shared.util.http.DefaultHttpClient
 import org.readium.r2.shared.util.toUrl
@@ -61,29 +61,23 @@ object EpubParser {
         val savedRawPath = fileStorage.saveRawBookFile(rawBytes, extension)
 
         try {
-            val isPdf = rawBytes.size >= 4 &&
-                rawBytes[0] == '%'.code.toByte() &&
-                rawBytes[1] == 'P'.code.toByte() &&
-                rawBytes[2] == 'D'.code.toByte() &&
-                rawBytes[3] == 'F'.code.toByte()
-
-            val parsed: ParsedBookPayload = if (isPdf) {
-                parsePdfPayload(savedRawPath, rawBytes, fallbackTitle, fileStorage)
-            } else {
-                parseWithReadiumOrFallback(
-                    context = context.applicationContext,
-                    savedRawPath = savedRawPath,
-                    rawBytes = rawBytes,
-                    fallbackTitle = fallbackTitle,
-                    fileStorage = fileStorage
-                )
-            }
+            val parsed: ParsedBookPayload = parseWithReadiumOrFallback(
+                context = context.applicationContext,
+                savedRawPath = savedRawPath,
+                rawBytes = rawBytes,
+                fallbackTitle = fallbackTitle,
+                fileStorage = fileStorage
+            )
 
             val normalizedContent = ContentIdentityHasher.normalizeForHash(parsed.fullText)
                 .ifBlank { ContentIdentityHasher.normalizeForHash("${parsed.title} ${parsed.author}") }
-            val contentHash = ContentIdentityHasher.sha256Hex(normalizedContent)
+            val contentHash = if (parsed.isBinaryFixedDocument) {
+                ContentIdentityHasher.sha256BytesHex(rawBytes)
+            } else {
+                ContentIdentityHasher.sha256Hex(normalizedContent)
+            }
             val textFilePath = fileStorage.saveExtractedTextFile(parsed.fullText)
-            val estimatedPages = (parsed.fullText.length / 900).coerceAtLeast(1)
+            val estimatedPages = (parsed.explicitPageCount ?: (parsed.fullText.length / 900)).coerceAtLeast(1)
 
             StagedBookImport(
                 title = parsed.title,
@@ -123,14 +117,18 @@ object EpubParser {
         val coverImagePath: String?,
         val layoutType: PublicationLayoutType = PublicationLayoutType.REFLOWABLE,
         val readingDirection: BookReadingDirection = BookReadingDirection.LTR,
-        val language: String = "en"
+        val language: String = "en",
+        val explicitPageCount: Int? = null,
+        val isBinaryFixedDocument: Boolean = false
     )
 
     /**
-     * Primary parser using Readium Kotlin Toolkit (`AssetRetriever` + `DefaultPublicationParser` + `PublicationOpener`).
-     * Inspects OPF metadata (`readingProgression`, `languages`, `presentation.layout`), cover service,
-     * and readingOrder resources.
+     * Primary parser using Readium Kotlin Toolkit (`AssetRetriever` + `PdfiumDocumentFactory` +
+     * `DefaultPublicationParser` + `PublicationOpener`).
+     * Handles both EPUB and PDF files natively via Readium, inspecting metadata (`readingProgression`,
+     * `languages`, `conformsTo`, `presentation.layout`), cover service, and resources.
      */
+    @OptIn(ExperimentalReadiumApi::class)
     private suspend fun parseWithReadiumOrFallback(
         context: Context,
         savedRawPath: String,
@@ -144,12 +142,13 @@ object EpubParser {
             contentResolver = context.contentResolver,
             httpClient = httpClient
         )
+        val pdfFactory = PdfiumDocumentFactory(context)
         val publicationOpener = PublicationOpener(
             publicationParser = DefaultPublicationParser(
                 context = context,
                 httpClient = httpClient,
                 assetRetriever = assetRetriever,
-                pdfFactory = null
+                pdfFactory = pdfFactory
             )
         )
 
@@ -159,11 +158,14 @@ object EpubParser {
             if (publication != null) {
                 try {
                     val metadata = publication.metadata
+                    val isPdfPublication = publication.conformsTo(Publication.Profile.PDF) ||
+                        bookFile.extension.equals("pdf", ignoreCase = true)
+
                     val resolvedTitle = metadata.title?.takeIf { it.isNotBlank() } ?: fallbackTitle
                     val resolvedAuthor = metadata.authors
                         .mapNotNull { it.name.takeIf { n -> n.isNotBlank() } }
                         .joinToString(", ")
-                        .ifBlank { "Unknown Author" }
+                        .ifBlank { if (isPdfPublication) "PDF Document" else "Unknown Author" }
 
                     val primaryLanguage = metadata.languages.firstOrNull()?.lowercase()?.trim().orEmpty()
                         .ifBlank { "en" }
@@ -183,28 +185,53 @@ object EpubParser {
 
                     val presentationMap = metadata.otherMetadata["presentation"] as? Map<*, *>
                     val layoutValue = presentationMap?.get("layout")?.toString()?.lowercase().orEmpty()
-                    val resolvedLayout = if (layoutValue == "fixed" || layoutValue == "pre-paginated") {
+                    val resolvedLayout = if (
+                        isPdfPublication ||
+                        layoutValue == "fixed" ||
+                        layoutValue == "pre-paginated"
+                    ) {
                         PublicationLayoutType.FIXED
                     } else {
                         PublicationLayoutType.REFLOWABLE
                     }
 
-                    // Extract cover bitmap from Readium's CoverService if available
-                    var coverPath: String?
+                    // Extract cover bitmap from Readium's CoverService (automatically renders PDF cover via Pdfium)
+                    var coverPath: String? = null
                     val coverBitmap = runCatching { publication.cover() }.getOrNull()
                     if (coverBitmap != null) {
                         val out = ByteArrayOutputStream()
                         @Suppress("DEPRECATION")
                         coverBitmap.compress(Bitmap.CompressFormat.WEBP, 86, out)
                         coverPath = fileStorage.saveCoverImageBytes(out.toByteArray())
-                    } else {
-                        // Fallback to manual zip extraction if Readium's cover() misses the metadata
+                    } else if (!isPdfPublication) {
+                        // Fallback to manual zip extraction if Readium's cover() misses EPUB metadata
                         coverPath = runCatching {
                             parseZipEpubFallback(rawBytes, fallbackTitle, fileStorage).coverImagePath
                         }.getOrNull()
                     }
 
-                    // Extract spine text in readingOrder via Readium Resource API
+                    // Fixed-layout PDFs are rendered visually via Readium's PdfNavigatorFragment;
+                    // do not extract raw PDF bytes via publication.get(link).read().
+                    if (isPdfPublication) {
+                        val pdfPageCount = runCatching { publication.positions().size }.getOrDefault(0)
+                            .takeIf { it > 0 }
+                            ?: metadata.numberOfPages?.takeIf { it > 0 }
+                            ?: 1
+                        val placeholderMetadataText = "$resolvedTitle\nby $resolvedAuthor"
+                        return ParsedBookPayload(
+                            title = resolvedTitle,
+                            author = resolvedAuthor,
+                            fullText = placeholderMetadataText,
+                            coverImagePath = coverPath,
+                            layoutType = PublicationLayoutType.FIXED,
+                            readingDirection = resolvedDirection,
+                            language = primaryLanguage,
+                            explicitPageCount = pdfPageCount,
+                            isBinaryFixedDocument = true
+                        )
+                    }
+
+                    // Extract spine text in readingOrder via Readium Resource API for reflowable EPUBs
                     val chapterTexts = mutableListOf<String>()
                     for (link in publication.readingOrder) {
                         val resource = publication.get(link) ?: continue
@@ -455,67 +482,6 @@ object EpubParser {
             readingDirection = if (isRtl) BookReadingDirection.RTL else BookReadingDirection.LTR,
             language = normLang
         )
-    }
-
-    private suspend fun parsePdfPayload(
-        savedRawPath: String,
-        rawBytes: ByteArray,
-        fallbackTitle: String,
-        fileStorage: BookFileStorage
-    ): ParsedBookPayload {
-        var coverPath: String? = null
-        var pageCount = 1
-        try {
-            val file = File(savedRawPath)
-            ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)?.use { pfd ->
-                PdfRenderer(pfd).use { renderer ->
-                    pageCount = renderer.pageCount.coerceAtLeast(1)
-                    if (renderer.pageCount > 0) {
-                        renderer.openPage(0).use { firstPage ->
-                            val bmp = Bitmap.createBitmap(
-                                firstPage.width.coerceIn(200, 800),
-                                firstPage.height.coerceIn(280, 1120),
-                                Bitmap.Config.ARGB_8888
-                            )
-                            Canvas(bmp).drawColor(Color.WHITE)
-                            firstPage.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                            val out = ByteArrayOutputStream()
-                            @Suppress("DEPRECATION")
-                            bmp.compress(Bitmap.CompressFormat.WEBP, 85, out)
-                            bmp.recycle()
-                            coverPath = fileStorage.saveCoverImageBytes(out.toByteArray())
-                        }
-                    }
-                }
-            }
-        } catch (_: Exception) {
-        }
-
-        val extractedLiterals = extractPrintableTextFromPdfBytes(rawBytes)
-        val fullText = extractedLiterals.ifBlank {
-            "$fallbackTitle\n\nImported PDF Document ($pageCount pages)."
-        }
-        return ParsedBookPayload(
-            title = fallbackTitle,
-            author = "PDF Document",
-            fullText = fullText,
-            coverImagePath = coverPath,
-            layoutType = PublicationLayoutType.FIXED,
-            readingDirection = BookReadingDirection.LTR,
-            language = "en"
-        )
-    }
-
-    private fun extractPrintableTextFromPdfBytes(bytes: ByteArray): String {
-        val rawLatin = String(bytes, Charsets.ISO_8859_1)
-        val parenMatches = Regex("\\(([^()\\\\]{4,200})\\)")
-            .findAll(rawLatin)
-            .map { it.groupValues[1].trim() }
-            .filter { token ->
-                token.count { ch -> ch.isLetterOrDigit() || ch == ' ' } > token.length * 0.85
-            }
-            .toList()
-        return parenMatches.joinToString(" ").trim()
     }
 
     private fun findOpfPath(entries: Map<String, ByteArray>): String? {

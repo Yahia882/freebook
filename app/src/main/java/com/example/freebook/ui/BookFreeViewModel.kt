@@ -180,25 +180,29 @@ class BookFreeViewModel(
 
     /**
      * Persists the reader position as a stable layout-independent locator (`charOffset` + `locatorJson` + `progress`).
+     * When [rawLocatorJson] is provided (e.g. from Readium's `PdfNavigatorFragment.currentLocator`),
+     * the exact Readium Locator JSON is stored directly in Room.
      */
     fun updateReadingLocator(
         bookId: String,
         charOffset: Int,
         totalChars: Int,
         derivedPositionIndex: Int,
-        derivedPositionCount: Int
+        derivedPositionCount: Int,
+        rawLocatorJson: String? = null,
+        explicitProgressPercent: Float? = null
     ) {
         val safeTotalChars = totalChars.coerceAtLeast(1)
         val safeOffset = charOffset.coerceIn(0, (safeTotalChars - 1).coerceAtLeast(0))
         val safePositionCount = derivedPositionCount.coerceAtLeast(1)
         val isAtEnd = safePositionCount > 1 && derivedPositionIndex >= safePositionCount - 1
         val progression = (safeOffset.toDouble() / safeTotalChars.toDouble()).coerceIn(0.0, 1.0)
-        val progressPercent = if (isAtEnd) {
-            100f
-        } else {
-            (progression.toFloat() * 100f).coerceIn(1f, 99.9f)
+        val progressPercent = when {
+            isAtEnd -> 100f
+            explicitProgressPercent != null -> explicitProgressPercent.coerceIn(1f, 99.9f)
+            else -> (progression.toFloat() * 100f).coerceIn(1f, 99.9f)
         }
-        val locatorJson = String.format(
+        val locatorJson = rawLocatorJson?.takeIf { it.isNotBlank() } ?: String.format(
             Locale.US,
             "{\"locations\":{\"progression\":%.5f,\"totalProgression\":%.5f,\"position\":%d,\"charOffset\":%d}}",
             progression,
