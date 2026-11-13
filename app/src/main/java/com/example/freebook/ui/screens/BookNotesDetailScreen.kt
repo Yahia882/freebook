@@ -50,8 +50,6 @@ import com.example.freebook.model.AnnotationType
 import com.example.freebook.model.Book
 import com.example.freebook.model.BookAnnotation
 import com.example.freebook.ui.components.BackArrowIcon
-import com.example.freebook.ui.components.BottomNavTab
-import com.example.freebook.ui.components.FloatingBottomDock
 import com.example.freebook.ui.components.TopBarMoreMenuButton
 import com.example.freebook.ui.theme.LocalBookFreePalette
 
@@ -279,20 +277,6 @@ fun BookNotesDetailScreen(
                 }
             }
         }
-
-        // Floating Bottom Navigation Dock
-        FloatingBottomDock(
-            selectedTab = BottomNavTab.NOTES,
-            onSelectTab = { tab ->
-                when (tab) {
-                    BottomNavTab.LIBRARY -> onNavigateToLibrary()
-                    BottomNavTab.NOTES -> onNavigateToNotesList()
-                }
-            },
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 22.dp)
-        )
     }
 
     if (showAddAnnotationDialog) {

@@ -2,11 +2,17 @@ package com.example.freebook.ui.components
 
 import android.graphics.BitmapFactory
 import android.util.LruCache
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +21,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -48,6 +55,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.freebook.model.Book
@@ -55,6 +63,7 @@ import com.example.freebook.ui.theme.LocalBookFreePalette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.math.roundToInt
 
 enum class BottomNavTab {
     LIBRARY,
@@ -168,9 +177,34 @@ fun BookCoverView(
 fun FloatingBottomDock(
     selectedTab: BottomNavTab,
     onSelectTab: (BottomNavTab) -> Unit,
+    enableAnimations: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalBookFreePalette.current
+    val isLibrarySelected = selectedTab == BottomNavTab.LIBRARY
+    val isNotesSelected = selectedTab == BottomNavTab.NOTES
+
+    val indicatorFraction by animateFloatAsState(
+        targetValue = if (isLibrarySelected) 0f else 1f,
+        animationSpec = if (enableAnimations) {
+            tween(durationMillis = 280, easing = FastOutSlowInEasing)
+        } else {
+            snap()
+        },
+        label = "dock_selector_offset"
+    )
+
+    val libraryContentColor by animateColorAsState(
+        targetValue = if (isLibrarySelected) palette.dockTabActiveText else palette.dockTabInactiveText,
+        animationSpec = if (enableAnimations) tween(durationMillis = 220) else snap(),
+        label = "dock_library_color"
+    )
+
+    val notesContentColor by animateColorAsState(
+        targetValue = if (isNotesSelected) palette.dockTabActiveText else palette.dockTabInactiveText,
+        animationSpec = if (enableAnimations) tween(durationMillis = 220) else snap(),
+        label = "dock_notes_color"
+    )
 
     Surface(
         modifier = modifier
@@ -184,64 +218,82 @@ fun FloatingBottomDock(
         shape = CircleShape,
         color = palette.dockBackground
     ) {
-        Row(
-            modifier = Modifier.padding(5.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            val isLibrarySelected = selectedTab == BottomNavTab.LIBRARY
+        Box(modifier = Modifier.padding(5.dp)) {
+            // Smoothly sliding pill selector indicator behind the active tab
             Box(
                 modifier = Modifier
+                    .offset {
+                        IntOffset(
+                            x = (indicatorFraction * 84.dp.toPx()).roundToInt(),
+                            y = 0
+                        )
+                    }
                     .width(80.dp)
                     .height(54.dp)
                     .clip(CircleShape)
-                    .background(if (isLibrarySelected) palette.dockTabActiveBg else Color.Transparent)
-                    .clickable { onSelectTab(BottomNavTab.LIBRARY) },
-                contentAlignment = Alignment.Center
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
-                ) {
-                    BookOpenIcon(
-                        color = if (isLibrarySelected) palette.dockTabActiveText else palette.dockTabInactiveText,
-                        size = 20.dp
-                    )
-                    Spacer(modifier = Modifier.height(3.dp))
-                    Text(
-                        text = "Library",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = if (isLibrarySelected) palette.dockTabActiveText else palette.dockTabInactiveText
-                    )
-                }
-            }
+                    .background(palette.dockTabActiveBg)
+            )
 
-            val isNotesSelected = selectedTab == BottomNavTab.NOTES
-            Box(
-                modifier = Modifier
-                    .width(80.dp)
-                    .height(54.dp)
-                    .clip(CircleShape)
-                    .background(if (isNotesSelected) palette.dockTabActiveBg else Color.Transparent)
-                    .clickable { onSelectTab(BottomNavTab.NOTES) },
-                contentAlignment = Alignment.Center
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
+                Box(
+                    modifier = Modifier
+                        .width(80.dp)
+                        .height(54.dp)
+                        .clip(CircleShape)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { onSelectTab(BottomNavTab.LIBRARY) },
+                    contentAlignment = Alignment.Center
                 ) {
-                    NotePencilIcon(
-                        color = if (isNotesSelected) palette.dockTabActiveText else palette.dockTabInactiveText,
-                        size = 20.dp
-                    )
-                    Spacer(modifier = Modifier.height(3.dp))
-                    Text(
-                        text = "Notes",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = if (isNotesSelected) palette.dockTabActiveText else palette.dockTabInactiveText
-                    )
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        BookOpenIcon(
+                            color = libraryContentColor,
+                            size = 20.dp
+                        )
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Text(
+                            text = "Library",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = libraryContentColor
+                        )
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .width(80.dp)
+                        .height(54.dp)
+                        .clip(CircleShape)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { onSelectTab(BottomNavTab.NOTES) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        NotePencilIcon(
+                            color = notesContentColor,
+                            size = 20.dp
+                        )
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Text(
+                            text = "Notes",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = notesContentColor
+                        )
+                    }
                 }
             }
         }

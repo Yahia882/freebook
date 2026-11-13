@@ -20,6 +20,18 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -27,6 +39,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -39,9 +52,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -52,6 +67,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.freebook.model.HighlightColor
 import com.example.freebook.model.ReaderTheme
 import com.example.freebook.ui.BookFreeViewModel
+import com.example.freebook.ui.components.BottomNavTab
+import com.example.freebook.ui.components.FloatingBottomDock
 import com.example.freebook.ui.reader.ReadiumActionModeCallbackWrapper
 import com.example.freebook.ui.reader.ReadiumActionModeSession
 import com.example.freebook.ui.reader.ReadiumWebViewNavigator
@@ -402,6 +419,11 @@ fun BookFreeApp(
     val isDarkTheme = uiState.preferences.isDarkTheme
     val fontSizeSp = uiState.preferences.fontSizeSp
     val enablePageAnimations = uiState.preferences.enablePageAnimations
+    var isTopBarSearchActive by remember { mutableStateOf(false) }
+
+    LaunchedEffect(currentScreen) {
+        isTopBarSearchActive = false
+    }
 
     FreebookTheme(darkTheme = isDarkTheme) {
         val palette = LocalBookFreePalette.current
@@ -418,172 +440,298 @@ fun BookFreeApp(
                 )
                 .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.displayCutout))
         ) {
-            when (val dest = currentScreen) {
-                ScreenDestination.Library -> {
-                    LibraryScreen(
-                        books = uiState.books,
-                        isDarkTheme = isDarkTheme,
-                        enablePageAnimations = enablePageAnimations,
-                        onToggleTheme = { viewModel.setDarkTheme(it) },
-                        onTogglePageAnimations = { viewModel.setEnablePageAnimations(it) },
-                        onOpenAbout = {
-                            currentScreen = ScreenDestination.About(ScreenDestination.Library)
-                        },
-                        onImportEpubClick = {
-                            bookPickerLauncher.launch(
-                                arrayOf(
-                                    "application/epub+zip",
-                                    "application/pdf",
-                                    "text/plain",
-                                    "application/octet-stream",
-                                    "*/*"
-                                )
-                            )
-                        },
-                        onBookClick = { clickedBook ->
-                            viewModel.markBookStarted(clickedBook)
-                            currentScreen = ScreenDestination.BookReader(clickedBook.id)
-                        },
-                        onDeleteBook = { bookToDelete ->
-                            viewModel.deleteBook(bookToDelete)
-                        },
-                        onNavigateToNotes = {
-                            currentScreen = ScreenDestination.NotesList
-                        }
-                    )
-                }
-
-                ScreenDestination.NotesList -> {
-                    NotesListScreen(
-                        books = uiState.books,
-                        annotations = uiState.annotations,
-                        isDarkTheme = isDarkTheme,
-                        enablePageAnimations = enablePageAnimations,
-                        pendingCustomCoverPath = uiState.pendingCustomCoverPath,
-                        onClearPendingCustomCover = { viewModel.clearPendingCustomCover() },
-                        onPickCustomCoverImage = {
-                            coverImagePickerLauncher.launch("image/*")
-                        },
-                        onAddCustomBookNoteEntry = { title, author, coverPath ->
-                            viewModel.addCustomNoteNotebook(title, author, coverPath)
-                        },
-                        onToggleTheme = { viewModel.setDarkTheme(it) },
-                        onTogglePageAnimations = { viewModel.setEnablePageAnimations(it) },
-                        onOpenAbout = {
-                            currentScreen = ScreenDestination.About(ScreenDestination.NotesList)
-                        },
-                        onBookNoteClick = { book ->
-                            currentScreen = ScreenDestination.BookNotesDetail(book.id)
-                        },
-                        onDeleteBook = { bookToDelete ->
-                            viewModel.deleteBook(bookToDelete)
-                        },
-                        onNavigateToLibrary = {
-                            currentScreen = ScreenDestination.Library
-                        }
-                    )
-                }
-
-                is ScreenDestination.BookNotesDetail -> {
-                    val book = uiState.books.find { it.id == dest.bookId }
-                    if (book == null) {
-                        currentScreen = ScreenDestination.NotesList
+            AnimatedContent(
+                targetState = currentScreen,
+                modifier = Modifier.fillMaxSize(),
+                contentKey = { dest ->
+                    when (dest) {
+                        ScreenDestination.Library -> "Library"
+                        ScreenDestination.NotesList -> "NotesList"
+                        is ScreenDestination.BookNotesDetail -> "BookNotesDetail:${dest.bookId}"
+                        is ScreenDestination.BookReader -> "BookReader:${dest.bookId}"
+                        is ScreenDestination.About -> "About"
+                    }
+                },
+                transitionSpec = {
+                    if (!enablePageAnimations) {
+                        EnterTransition.None togetherWith ExitTransition.None
                     } else {
-                        val bookAnnotations = uiState.annotations.filter { it.bookId == book.id }
-                        BookNotesDetailScreen(
-                            book = book,
-                            annotations = bookAnnotations,
+                        val isMovingToLibraryFromNotes =
+                            targetState is ScreenDestination.Library &&
+                                (initialState is ScreenDestination.NotesList ||
+                                    initialState is ScreenDestination.BookNotesDetail)
+
+                        val isMovingToNotesFromLibrary =
+                            (targetState is ScreenDestination.NotesList ||
+                                targetState is ScreenDestination.BookNotesDetail) &&
+                                initialState is ScreenDestination.Library
+
+                        val isDrillingIntoNoteDetail =
+                            targetState is ScreenDestination.BookNotesDetail &&
+                                initialState is ScreenDestination.NotesList
+
+                        val isPoppingFromNoteDetail =
+                            targetState is ScreenDestination.NotesList &&
+                                initialState is ScreenDestination.BookNotesDetail
+
+                        val spec = when {
+                            isMovingToLibraryFromNotes || isPoppingFromNoteDetail -> {
+                                // Navigating Left -> slide in from left, exit right with slight parallax + fade
+                                (slideInHorizontally(
+                                    animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing)
+                                ) { fullWidth -> -fullWidth } + fadeIn(
+                                    animationSpec = tween(durationMillis = 240)
+                                )) togetherWith (slideOutHorizontally(
+                                    animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing)
+                                ) { fullWidth -> fullWidth / 3 } + fadeOut(
+                                    animationSpec = tween(durationMillis = 200)
+                                ))
+                            }
+
+                            isMovingToNotesFromLibrary || isDrillingIntoNoteDetail -> {
+                                // Navigating Right -> slide in from right, exit left with slight parallax + fade
+                                (slideInHorizontally(
+                                    animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing)
+                                ) { fullWidth -> fullWidth } + fadeIn(
+                                    animationSpec = tween(durationMillis = 240)
+                                )) togetherWith (slideOutHorizontally(
+                                    animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing)
+                                ) { fullWidth -> -fullWidth / 3 } + fadeOut(
+                                    animationSpec = tween(durationMillis = 200)
+                                ))
+                            }
+
+                            else -> {
+                                fadeIn(animationSpec = tween(durationMillis = 220)) togetherWith
+                                    fadeOut(animationSpec = tween(durationMillis = 180))
+                            }
+                        }
+
+                        spec.using(SizeTransform(clip = true))
+                    }
+                },
+                label = "main_screen_transition"
+            ) { dest ->
+                when (dest) {
+                    ScreenDestination.Library -> {
+                        LibraryScreen(
+                            books = uiState.books,
                             isDarkTheme = isDarkTheme,
                             enablePageAnimations = enablePageAnimations,
-                            onBack = { currentScreen = ScreenDestination.NotesList },
-                            onAddAnnotation = { type, pageNum, text ->
-                                viewModel.addAnnotation(
-                                    bookId = book.id,
-                                    type = type,
-                                    pageNumber = pageNum,
-                                    text = text
+                            onToggleTheme = { viewModel.setDarkTheme(it) },
+                            onTogglePageAnimations = { viewModel.setEnablePageAnimations(it) },
+                            onOpenAbout = {
+                                currentScreen = ScreenDestination.About(ScreenDestination.Library)
+                            },
+                            onImportEpubClick = {
+                                bookPickerLauncher.launch(
+                                    arrayOf(
+                                        "application/epub+zip",
+                                        "application/pdf",
+                                        "text/plain",
+                                        "application/octet-stream",
+                                        "*/*"
+                                    )
                                 )
                             },
-                            onDeleteAnnotation = { annotation ->
-                                viewModel.deleteAnnotation(annotation)
+                            onBookClick = { clickedBook ->
+                                viewModel.markBookStarted(clickedBook)
+                                currentScreen = ScreenDestination.BookReader(clickedBook.id)
+                            },
+                            onDeleteBook = { bookToDelete ->
+                                viewModel.deleteBook(bookToDelete)
+                            },
+                            onNavigateToNotes = {
+                                currentScreen = ScreenDestination.NotesList
+                            },
+                            onSearchActiveChanged = { active ->
+                                if (currentScreen is ScreenDestination.Library) {
+                                    isTopBarSearchActive = active
+                                }
+                            }
+                        )
+                    }
+
+                    ScreenDestination.NotesList -> {
+                        NotesListScreen(
+                            books = uiState.books,
+                            annotations = uiState.annotations,
+                            isDarkTheme = isDarkTheme,
+                            enablePageAnimations = enablePageAnimations,
+                            pendingCustomCoverPath = uiState.pendingCustomCoverPath,
+                            onClearPendingCustomCover = { viewModel.clearPendingCustomCover() },
+                            onPickCustomCoverImage = {
+                                coverImagePickerLauncher.launch("image/*")
+                            },
+                            onAddCustomBookNoteEntry = { title, author, coverPath ->
+                                viewModel.addCustomNoteNotebook(title, author, coverPath)
                             },
                             onToggleTheme = { viewModel.setDarkTheme(it) },
                             onTogglePageAnimations = { viewModel.setEnablePageAnimations(it) },
                             onOpenAbout = {
-                                currentScreen = ScreenDestination.About(dest)
+                                currentScreen = ScreenDestination.About(ScreenDestination.NotesList)
+                            },
+                            onBookNoteClick = { book ->
+                                currentScreen = ScreenDestination.BookNotesDetail(book.id)
+                            },
+                            onDeleteBook = { bookToDelete ->
+                                viewModel.deleteBook(bookToDelete)
                             },
                             onNavigateToLibrary = {
                                 currentScreen = ScreenDestination.Library
                             },
-                            onNavigateToNotesList = {
+                            onSearchActiveChanged = { active ->
+                                if (currentScreen is ScreenDestination.NotesList) {
+                                    isTopBarSearchActive = active
+                                }
+                            }
+                        )
+                    }
+
+                    is ScreenDestination.BookNotesDetail -> {
+                        val book = uiState.books.find { it.id == dest.bookId }
+                        if (book == null) {
+                            LaunchedEffect(dest.bookId) {
                                 currentScreen = ScreenDestination.NotesList
                             }
-                        )
+                        } else {
+                            val bookAnnotations = uiState.annotations.filter { it.bookId == book.id }
+                            BookNotesDetailScreen(
+                                book = book,
+                                annotations = bookAnnotations,
+                                isDarkTheme = isDarkTheme,
+                                enablePageAnimations = enablePageAnimations,
+                                onBack = { currentScreen = ScreenDestination.NotesList },
+                                onAddAnnotation = { type, pageNum, text ->
+                                    viewModel.addAnnotation(
+                                        bookId = book.id,
+                                        type = type,
+                                        pageNumber = pageNum,
+                                        text = text
+                                    )
+                                },
+                                onDeleteAnnotation = { annotation ->
+                                    viewModel.deleteAnnotation(annotation)
+                                },
+                                onToggleTheme = { viewModel.setDarkTheme(it) },
+                                onTogglePageAnimations = { viewModel.setEnablePageAnimations(it) },
+                                onOpenAbout = {
+                                    currentScreen = ScreenDestination.About(dest)
+                                },
+                                onNavigateToLibrary = {
+                                    currentScreen = ScreenDestination.Library
+                                },
+                                onNavigateToNotesList = {
+                                    currentScreen = ScreenDestination.NotesList
+                                }
+                            )
+                        }
                     }
-                }
 
-                is ScreenDestination.BookReader -> {
-                    val book = uiState.books.find { it.id == dest.bookId }
-                    if (book == null) {
-                        currentScreen = ScreenDestination.Library
-                    } else {
-                        val bookAnnotations = uiState.annotations.filter { it.bookId == book.id }
-                        BookReaderScreen(
-                            book = book,
-                            bookAnnotations = bookAnnotations,
-                            preferences = uiState.preferences,
-                            loadBookText = { targetBook -> viewModel.loadBookText(targetBook) },
-                            onRegisterActionModeSession = onRegisterActionModeSession,
-                            onSelectReaderTheme = { viewModel.setReaderTheme(it) },
-                            onSelectFontSizeMultiplier = { viewModel.setFontSizeMultiplier(it) },
-                            onSelectLineHeightMultiplier = { viewModel.setLineHeightMultiplier(it) },
-                            onSelectPageMarginDp = { viewModel.setPageMarginDp(it) },
-                            onSelectTextAlignment = { viewModel.setTextAlignment(it) },
-                            onSelectPublisherStyles = { viewModel.setPublisherStyles(it) },
-                            onSelectNavigationMode = { viewModel.setNavigationMode(it) },
-                            onSelectFixedLayoutFitMode = { viewModel.setFixedLayoutFitMode(it) },
-                            onLocatorChanged = { charOffset, totalChars, derivedPosIdx, derivedPosCount, rawLocatorJson, explicitProgress ->
-                                viewModel.updateReadingLocator(
-                                    bookId = book.id,
-                                    charOffset = charOffset,
-                                    totalChars = totalChars,
-                                    derivedPositionIndex = derivedPosIdx,
-                                    derivedPositionCount = derivedPosCount,
-                                    rawLocatorJson = rawLocatorJson,
-                                    explicitProgressPercent = explicitProgress
-                                )
-                            },
-                            onAddAnnotation = { type, pageNumber, charOffset, endCharOffset, text, quotedText, highlightColorName ->
-                                viewModel.addAnnotation(
-                                    bookId = book.id,
-                                    type = type,
-                                    pageNumber = pageNumber,
-                                    charOffset = charOffset,
-                                    endCharOffset = endCharOffset,
-                                    text = text,
-                                    quotedText = quotedText,
-                                    highlightColorName = highlightColorName,
-                                    showToast = true
-                                )
-                            },
-                            onUpdateAnnotationColor = { annotation, color ->
-                                viewModel.updateAnnotationHighlightColor(annotation.id, color)
-                            },
-                            onDeleteAnnotation = { annotation ->
-                                viewModel.deleteAnnotation(annotation)
-                            },
-                            onCloseReader = {
+                    is ScreenDestination.BookReader -> {
+                        val book = uiState.books.find { it.id == dest.bookId }
+                        if (book == null) {
+                            LaunchedEffect(dest.bookId) {
                                 currentScreen = ScreenDestination.Library
                             }
+                        } else {
+                            val bookAnnotations = uiState.annotations.filter { it.bookId == book.id }
+                            BookReaderScreen(
+                                book = book,
+                                bookAnnotations = bookAnnotations,
+                                preferences = uiState.preferences,
+                                loadBookText = { targetBook -> viewModel.loadBookText(targetBook) },
+                                onRegisterActionModeSession = onRegisterActionModeSession,
+                                onSelectReaderTheme = { viewModel.setReaderTheme(it) },
+                                onSelectFontSizeMultiplier = { viewModel.setFontSizeMultiplier(it) },
+                                onSelectLineHeightMultiplier = { viewModel.setLineHeightMultiplier(it) },
+                                onSelectPageMarginDp = { viewModel.setPageMarginDp(it) },
+                                onSelectTextAlignment = { viewModel.setTextAlignment(it) },
+                                onSelectPublisherStyles = { viewModel.setPublisherStyles(it) },
+                                onSelectNavigationMode = { viewModel.setNavigationMode(it) },
+                                onSelectFixedLayoutFitMode = { viewModel.setFixedLayoutFitMode(it) },
+                                onLocatorChanged = { charOffset, totalChars, derivedPosIdx, derivedPosCount, rawLocatorJson, explicitProgress ->
+                                    viewModel.updateReadingLocator(
+                                        bookId = book.id,
+                                        charOffset = charOffset,
+                                        totalChars = totalChars,
+                                        derivedPositionIndex = derivedPosIdx,
+                                        derivedPositionCount = derivedPosCount,
+                                        rawLocatorJson = rawLocatorJson,
+                                        explicitProgressPercent = explicitProgress
+                                    )
+                                },
+                                onAddAnnotation = { type, pageNumber, charOffset, endCharOffset, text, quotedText, highlightColorName ->
+                                    viewModel.addAnnotation(
+                                        bookId = book.id,
+                                        type = type,
+                                        pageNumber = pageNumber,
+                                        charOffset = charOffset,
+                                        endCharOffset = endCharOffset,
+                                        text = text,
+                                        quotedText = quotedText,
+                                        highlightColorName = highlightColorName,
+                                        showToast = true
+                                    )
+                                },
+                                onUpdateAnnotationColor = { annotation, color ->
+                                    viewModel.updateAnnotationHighlightColor(annotation.id, color)
+                                },
+                                onDeleteAnnotation = { annotation ->
+                                    viewModel.deleteAnnotation(annotation)
+                                },
+                                onCloseReader = {
+                                    currentScreen = ScreenDestination.Library
+                                }
+                            )
+                        }
+                    }
+
+                    is ScreenDestination.About -> {
+                        AboutScreen(
+                            onBack = { currentScreen = dest.previous }
                         )
                     }
                 }
+            }
 
-                is ScreenDestination.About -> {
-                    AboutScreen(
-                        onBack = { currentScreen = dest.previous }
-                    )
-                }
+            // Stationary Floating Bottom Navigation Dock (persists in place across Library <-> Notes transitions)
+            val isMainNavScreen = currentScreen is ScreenDestination.Library ||
+                currentScreen is ScreenDestination.NotesList ||
+                currentScreen is ScreenDestination.BookNotesDetail
+
+            val selectedBottomTab = if (currentScreen is ScreenDestination.Library) {
+                BottomNavTab.LIBRARY
+            } else {
+                BottomNavTab.NOTES
+            }
+
+            AnimatedVisibility(
+                visible = isMainNavScreen && !isTopBarSearchActive,
+                enter = if (enablePageAnimations) fadeIn(tween(180)) else EnterTransition.None,
+                exit = if (enablePageAnimations) fadeOut(tween(150)) else ExitTransition.None,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 22.dp)
+            ) {
+                FloatingBottomDock(
+                    selectedTab = selectedBottomTab,
+                    enableAnimations = enablePageAnimations,
+                    onSelectTab = { tab ->
+                        when (tab) {
+                            BottomNavTab.LIBRARY -> {
+                                if (currentScreen != ScreenDestination.Library) {
+                                    currentScreen = ScreenDestination.Library
+                                }
+                            }
+                            BottomNavTab.NOTES -> {
+                                if (currentScreen != ScreenDestination.NotesList) {
+                                    currentScreen = ScreenDestination.NotesList
+                                }
+                            }
+                        }
+                    }
+                )
             }
         }
 

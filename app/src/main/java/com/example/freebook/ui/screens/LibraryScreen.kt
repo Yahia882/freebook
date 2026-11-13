@@ -2,8 +2,6 @@ package com.example.freebook.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -36,6 +34,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -61,9 +60,7 @@ import androidx.compose.ui.unit.sp
 import com.example.freebook.model.Book
 import com.example.freebook.model.LibraryFilter
 import com.example.freebook.ui.components.BookCoverView
-import com.example.freebook.ui.components.BottomNavTab
 import com.example.freebook.ui.components.CloseCrossIcon
-import com.example.freebook.ui.components.FloatingBottomDock
 import com.example.freebook.ui.components.PlusVectorIcon
 import com.example.freebook.ui.components.SearchVectorIcon
 import com.example.freebook.ui.components.TopBarMoreMenuButton
@@ -82,6 +79,7 @@ fun LibraryScreen(
     onBookClick: (Book) -> Unit,
     onDeleteBook: (Book) -> Unit,
     onNavigateToNotes: () -> Unit,
+    onSearchActiveChanged: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val palette = LocalBookFreePalette.current
@@ -108,10 +106,17 @@ fun LibraryScreen(
     }
 
     LaunchedEffect(isSearchActive) {
+        onSearchActiveChanged(isSearchActive)
         if (isSearchActive) {
             runCatching { searchFocusRequester.requestFocus() }
         } else {
             focusManager.clearFocus()
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            onSearchActiveChanged(false)
         }
     }
 
@@ -463,25 +468,6 @@ fun LibraryScreen(
                     }
                 }
             }
-        }
-
-        // Floating Bottom Navigation Dock (hidden while searching so it never floats above keyboard)
-        AnimatedVisibility(
-            visible = !isSearchActive,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 22.dp)
-        ) {
-            FloatingBottomDock(
-                selectedTab = BottomNavTab.LIBRARY,
-                onSelectTab = { tab ->
-                    if (tab == BottomNavTab.NOTES) {
-                        onNavigateToNotes()
-                    }
-                }
-            )
         }
     }
 
