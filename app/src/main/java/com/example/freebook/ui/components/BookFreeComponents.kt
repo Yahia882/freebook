@@ -1,6 +1,7 @@
 package com.example.freebook.ui.components
 
 import android.graphics.BitmapFactory
+import android.util.LruCache
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -60,6 +61,15 @@ enum class BottomNavTab {
     NOTES
 }
 
+object CoverBitmapCache {
+    private val cache = LruCache<String, ImageBitmap>(40)
+
+    fun get(path: String): ImageBitmap? = cache.get(path)
+    fun put(path: String, bitmap: ImageBitmap) {
+        cache.put(path, bitmap)
+    }
+}
+
 /**
  * Unified book cover component for all books.
  * - Loads `book.coverImagePath` off the main thread (`Dispatchers.IO`) if a cover image file exists.
@@ -72,15 +82,21 @@ fun BookCoverView(
     modifier: Modifier = Modifier,
     isThumbnail: Boolean = false
 ) {
-    val customBitmap by produceState<ImageBitmap?>(initialValue = null, key1 = book.coverImagePath) {
-        value = withContext(Dispatchers.IO) {
-            val path = book.coverImagePath
-            if (path.isNullOrBlank()) {
-                null
-            } else {
+    val path = book.coverImagePath
+    val cachedBitmap = remember(path) {
+        if (!path.isNullOrBlank()) CoverBitmapCache.get(path) else null
+    }
+
+    val customBitmap by produceState<ImageBitmap?>(initialValue = cachedBitmap, key1 = path) {
+        if (value == null && !path.isNullOrBlank()) {
+            value = withContext(Dispatchers.IO) {
                 val file = File(path)
                 if (file.exists()) {
-                    runCatching { BitmapFactory.decodeFile(file.absolutePath)?.asImageBitmap() }.getOrNull()
+                    runCatching {
+                        BitmapFactory.decodeFile(file.absolutePath)?.asImageBitmap()?.also {
+                            CoverBitmapCache.put(path, it)
+                        }
+                    }.getOrNull()
                 } else {
                     null
                 }
