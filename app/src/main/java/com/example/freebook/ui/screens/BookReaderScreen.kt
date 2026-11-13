@@ -982,13 +982,12 @@ fun BookReaderScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Row(
+                            Box(
                                 modifier = Modifier
+                                    .height(36.dp)
                                     .clip(CircleShape)
-                                    .background(
-                                        if (palette.isDark) Color.White.copy(alpha = 0.11f)
-                                        else Color.Black.copy(alpha = 0.08f)
-                                    )
+                                    .background(Color.Transparent)
+                                    .border(1.dp, palette.borderSubtle, CircleShape)
                                     .clickable {
                                         coveredPassageForNote = ""
                                         coveredStartOffsetForNote = -1
@@ -996,11 +995,9 @@ fun BookReaderScreen(
                                         noteInputText = ""
                                         showAddNoteDialog = true
                                     }
-                                    .padding(horizontal = 13.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    .padding(horizontal = 14.dp),
+                                contentAlignment = Alignment.Center
                             ) {
-                                NotePencilIcon(color = palette.textPrimary, size = 16.dp)
                                 Text(
                                     text = "Add Note",
                                     fontSize = 13.sp,
@@ -1025,16 +1022,8 @@ fun BookReaderScreen(
                                     modifier = Modifier
                                         .size(36.dp)
                                         .clip(CircleShape)
-                                        .background(
-                                            if (isCurrentPositionBookmarked) palette.dockTabActiveBg
-                                            else Color.Transparent
-                                        )
-                                        .border(
-                                            width = 1.dp,
-                                            color = if (isCurrentPositionBookmarked) palette.dockTabActiveBg
-                                            else palette.borderSubtle,
-                                            shape = CircleShape
-                                        )
+                                        .background(Color.Transparent)
+                                        .border(1.dp, palette.borderSubtle, CircleShape)
                                         .clickable {
                                             val existing = currentPositionBookmark
                                             if (existing != null) {
@@ -1058,10 +1047,9 @@ fun BookReaderScreen(
                                     contentAlignment = Alignment.Center
                                 ) {
                                     BookmarkRibbonIcon(
-                                        color = if (isCurrentPositionBookmarked) palette.dockTabActiveText
-                                        else palette.textPrimary,
+                                        color = palette.textPrimary,
                                         filled = isCurrentPositionBookmarked,
-                                        size = 19.dp
+                                        size = 18.dp
                                     )
                                 }
 
@@ -1069,6 +1057,7 @@ fun BookReaderScreen(
                                     modifier = Modifier
                                         .size(36.dp)
                                         .clip(CircleShape)
+                                        .background(Color.Transparent)
                                         .border(1.dp, palette.borderSubtle, CircleShape)
                                         .clickable { showSearchInBookDialog = true },
                                     contentAlignment = Alignment.Center
@@ -1079,7 +1068,7 @@ fun BookReaderScreen(
                         }
 
                         // Extended Options: Side-by-side Row
-                        // - EPUB: Left = "Theme & Settings" (no subtitle), Right = "Notebook"
+                        // - EPUB: Left = "Theme", Right = "Notebook"
                         // - PDF:  Left = Scroll / Swipe toggle button, Right = "Notebook"
                         AnimatedVisibility(
                             visible = isBottomBarExpanded,
@@ -1089,7 +1078,7 @@ fun BookReaderScreen(
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(top = 14.dp, bottom = 4.dp),
+                                    .padding(top = 12.dp, bottom = 2.dp),
                                 verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
                                 HorizontalDivider(color = palette.borderSubtle, thickness = 1.dp)
@@ -1099,42 +1088,25 @@ fun BookReaderScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    // 1. LEFT BUTTON: "Theme & Settings" (EPUB) OR "Swipe / Scroll" Toggle (PDF)
+                                    // 1. LEFT BUTTON: "Theme" (EPUB) OR "Swipe / Scroll" Toggle (PDF)
                                     if (book.layoutType == PublicationLayoutType.REFLOWABLE) {
-                                        Row(
+                                        Box(
                                             modifier = Modifier
                                                 .weight(1f)
-                                                .height(48.dp)
-                                                .clip(RoundedCornerShape(14.dp))
-                                                .background(palette.surfaceColor)
-                                                .border(1.dp, palette.borderSubtle, RoundedCornerShape(14.dp))
+                                                .height(36.dp)
+                                                .clip(CircleShape)
+                                                .background(Color.Transparent)
+                                                .border(1.dp, palette.borderSubtle, CircleShape)
                                                 .clickable {
                                                     showThemesBottomSheet = true
                                                 }
-                                                .padding(horizontal = 12.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                .padding(horizontal = 14.dp),
+                                            contentAlignment = Alignment.Center
                                         ) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(22.dp)
-                                                    .clip(CircleShape)
-                                                    .background(readerBgColor)
-                                                    .border(1.dp, palette.textMuted, CircleShape),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Text(
-                                                    text = "A",
-                                                    fontFamily = FontFamily.Serif,
-                                                    fontSize = 11.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = readerTextColor
-                                                )
-                                            }
                                             Text(
-                                                text = "Theme & Settings",
+                                                text = "Theme",
                                                 fontSize = 13.sp,
-                                                fontWeight = FontWeight.SemiBold,
+                                                fontWeight = FontWeight.Medium,
                                                 color = palette.textPrimary,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis
@@ -1146,10 +1118,10 @@ fun BookReaderScreen(
                                         Row(
                                             modifier = Modifier
                                                 .weight(1f)
-                                                .height(48.dp)
-                                                .clip(RoundedCornerShape(14.dp))
-                                                .background(palette.surfaceColor)
-                                                .border(1.dp, palette.borderSubtle, RoundedCornerShape(14.dp))
+                                                .height(36.dp)
+                                                .clip(CircleShape)
+                                                .background(Color.Transparent)
+                                                .border(1.dp, palette.borderSubtle, CircleShape)
                                                 .clickable {
                                                     val nextMode = if (isScrollMode) {
                                                         ReaderNavigationMode.HORIZONTAL_SWIPE
@@ -1158,7 +1130,7 @@ fun BookReaderScreen(
                                                     }
                                                     onSelectNavigationMode(nextMode)
                                                 }
-                                                .padding(4.dp),
+                                                .padding(3.dp),
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                                         ) {
@@ -1166,18 +1138,19 @@ fun BookReaderScreen(
                                                 modifier = Modifier
                                                     .weight(1f)
                                                     .fillMaxSize()
-                                                    .clip(RoundedCornerShape(10.dp))
-                                                    .background(
-                                                        if (!isScrollMode) palette.dockTabActiveBg
-                                                        else Color.Transparent
+                                                    .clip(CircleShape)
+                                                    .background(Color.Transparent)
+                                                    .then(
+                                                        if (!isScrollMode) Modifier.border(1.dp, palette.borderSubtle, CircleShape)
+                                                        else Modifier
                                                     ),
                                                 contentAlignment = Alignment.Center
                                             ) {
                                                 Text(
                                                     text = "Swipe",
                                                     fontSize = 13.sp,
-                                                    fontWeight = FontWeight.SemiBold,
-                                                    color = if (!isScrollMode) palette.dockTabActiveText
+                                                    fontWeight = FontWeight.Medium,
+                                                    color = if (!isScrollMode) palette.textPrimary
                                                     else palette.textMuted,
                                                     maxLines = 1
                                                 )
@@ -1186,18 +1159,19 @@ fun BookReaderScreen(
                                                 modifier = Modifier
                                                     .weight(1f)
                                                     .fillMaxSize()
-                                                    .clip(RoundedCornerShape(10.dp))
-                                                    .background(
-                                                        if (isScrollMode) palette.dockTabActiveBg
-                                                        else Color.Transparent
+                                                    .clip(CircleShape)
+                                                    .background(Color.Transparent)
+                                                    .then(
+                                                        if (isScrollMode) Modifier.border(1.dp, palette.borderSubtle, CircleShape)
+                                                        else Modifier
                                                     ),
                                                 contentAlignment = Alignment.Center
                                             ) {
                                                 Text(
                                                     text = "Scroll",
                                                     fontSize = 13.sp,
-                                                    fontWeight = FontWeight.SemiBold,
-                                                    color = if (isScrollMode) palette.dockTabActiveText
+                                                    fontWeight = FontWeight.Medium,
+                                                    color = if (isScrollMode) palette.textPrimary
                                                     else palette.textMuted,
                                                     maxLines = 1
                                                 )
@@ -1209,50 +1183,33 @@ fun BookReaderScreen(
                                     Row(
                                         modifier = Modifier
                                             .weight(1f)
-                                            .height(48.dp)
-                                            .clip(RoundedCornerShape(14.dp))
-                                            .background(palette.surfaceColor)
-                                            .border(1.dp, palette.borderSubtle, RoundedCornerShape(14.dp))
+                                            .height(36.dp)
+                                            .clip(CircleShape)
+                                            .background(Color.Transparent)
+                                            .border(1.dp, palette.borderSubtle, CircleShape)
                                             .clickable {
                                                 showBookmarksAndHighlightsDialog = true
                                             }
-                                            .padding(horizontal = 12.dp),
+                                            .padding(horizontal = 14.dp),
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
                                     ) {
-                                        Row(
-                                            modifier = Modifier.weight(1f, fill = false),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            BookmarkRibbonIcon(
-                                                color = palette.textPrimary,
-                                                filled = allBookAnnotationsSorted.isNotEmpty(),
-                                                size = 17.dp
-                                            )
-                                            Text(
-                                                text = "Notebook",
-                                                fontSize = 13.sp,
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = palette.textPrimary,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
+                                        Text(
+                                            text = "Notebook",
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = palette.textPrimary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
 
-                                        Box(
-                                            modifier = Modifier
-                                                .clip(CircleShape)
-                                                .background(palette.dockTabActiveBg)
-                                                .padding(horizontal = 9.dp, vertical = 2.dp)
-                                        ) {
-                                            Text(
-                                                text = "${allBookAnnotationsSorted.size}",
-                                                fontSize = 11.5.sp,
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = palette.dockTabActiveText
-                                            )
-                                        }
+                                        Text(
+                                            text = "${allBookAnnotationsSorted.size}",
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = palette.textMuted,
+                                            maxLines = 1
+                                        )
                                     }
                                 }
                             }
