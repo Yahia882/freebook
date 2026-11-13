@@ -41,11 +41,24 @@ import org.readium.r2.navigator.html.HtmlDecorationTemplates
 import org.readium.r2.shared.ExperimentalReadiumApi
 import org.readium.r2.shared.publication.Link
 import org.readium.r2.shared.publication.Locator
+import org.readium.r2.shared.publication.Publication
 import org.readium.r2.shared.util.Url
 import org.readium.r2.shared.util.mediatype.MediaType
 import java.util.Locale
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.reflect.KClass
+
+/**
+ * Flattened entry from Readium's `publication.tableOfContents`, carrying its original
+ * Readium [Link], resolved [Locator], display title, and hierarchy depth.
+ */
+data class ReadiumTocEntry(
+    val id: String,
+    val title: String,
+    val depth: Int,
+    val link: Link,
+    val locator: Locator?
+)
 
 /**
  * Snapshot of the most recent non-empty text selection inside the Readium [WebView].
@@ -212,9 +225,13 @@ class ReadiumWebViewNavigator : DecorableNavigator {
     var lastNonEmptySelection: CachedWebViewSelection? = null
         internal set
 
+    @Volatile
+    var totalCanonicalChars: Int = 0
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private val decorationsByGroup = LinkedHashMap<String, List<Decoration>>()
     private val listenersByGroup = LinkedHashMap<String, CopyOnWriteArrayList<DecorableNavigator.Listener>>()
+    private val tocLocatorsByHref = LinkedHashMap<String, Locator>()
     private val decorationTemplates: HtmlDecorationTemplates = HtmlDecorationTemplates.defaultTemplates()
 
     private val _currentLocator = MutableStateFlow(
@@ -229,14 +246,37 @@ class ReadiumWebViewNavigator : DecorableNavigator {
     var onSingleTapToggleHud: (() -> Unit)? = null
     var onInitialPositionRestored: (() -> Unit)? = null
 
+    fun registerTableOfContents(entries: List<ReadiumTocEntry>) {
+        tocLocatorsByHref.clear()
+        for (entry in entries) {
+            val loc = entry.locator ?: continue
+            tocLocatorsByHref[entry.link.href.toString()] = loc
+            tocLocatorsByHref[loc.href.toString()] = loc
+        }
+    }
+
     override fun go(locator: Locator, animated: Boolean): Boolean {
         _currentLocator.value = locator
-        val targetOffset = (locator.locations.otherLocations["charOffset"] as? Number)?.toInt() ?: 0
+        val explicitOffset = (locator.locations.otherLocations["charOffset"] as? Number)?.toInt()
+        val targetOffset = explicitOffset
+            ?: locator.locations.totalProgression?.let { prog ->
+                if (totalCanonicalChars > 0) {
+                    (prog * totalCanonicalChars).toInt().coerceIn(0, (totalCanonicalChars - 1).coerceAtLeast(0))
+                } else {
+                    0
+                }
+            }
+            ?: 0
         jumpToCharOffset(targetOffset)
         return true
     }
 
     override fun go(link: Link, animated: Boolean): Boolean {
+        val mappedLocator = tocLocatorsByHref[link.href.toString()]
+            ?: tocLocatorsByHref[link.href.toString().substringBefore('#')]
+        if (mappedLocator != null) {
+            return go(mappedLocator, animated)
+        }
         jumpToCharOffset(0)
         return true
     }
@@ -478,7 +518,13 @@ class ReadiumWebViewNavigator : DecorableNavigator {
                 val safePos = currentPosition.coerceAtLeast(1)
                 val safeTotal = totalPositions.coerceAtLeast(1)
                 val safeOffset = charOffset.coerceAtLeast(0)
-                val prog = ((safePos - 1).toDouble() / safeTotal.toDouble()).coerceIn(0.0, 1.0)
+                val totalChars = totalCanonicalChars
+                val prog = when {
+                    safeTotal > 1 && safePos >= safeTotal -> 1.0
+                    totalChars > 0 -> (safeOffset.toDouble() / totalChars.toDouble()).coerceIn(0.0, 1.0)
+                    safeTotal > 1 -> ((safePos - 1).toDouble() / (safeTotal - 1).toDouble()).coerceIn(0.0, 1.0)
+                    else -> 0.0
+                }
                 _currentLocator.value = Locator(
                     href = Url("chapter.xhtml")!!,
                     mediaType = MediaType.XHTML,
@@ -807,7 +853,7 @@ html, body {
 body.paged-mode {
     overflow: hidden;
     height: 100vh;
-    width: 100vw;
+    width: 100%;
 }
 body.scroll-mode {
     overflow-x: hidden;
@@ -816,7 +862,7 @@ body.scroll-mode {
     min-height: 100vh;
 }
 #r2-viewport {
-    width: 100vw;
+    width: 100%;
     height: 100vh;
     overflow: hidden;
     position: relative;
@@ -830,10 +876,14 @@ body.scroll-mode #r2-viewport {
     padding: 58px var(--RS__pageMargins) 56px var(--RS__pageMargins);
 }
 body.paged-mode #r2-book-content {
+    width: 100%;
     height: calc(100vh - 114px);
     margin-top: 58px;
     margin-bottom: 56px;
+    margin-left: auto;
+    margin-right: auto;
     padding: 0 var(--RS__pageMargins);
+    column-count: 1;
     column-width: calc(100vw - (var(--RS__pageMargins) * 2));
     column-gap: calc(var(--RS__pageMargins) * 2);
     column-fill: auto;
@@ -878,6 +928,7 @@ mark.r2-decoration-underline {
         lastNonEmptySelection: null
     };
 
+    var viewportEl = document.getElementById('r2-viewport');
     var contentEl = document.getElementById('r2-book-content');
     var paragraphs = Array.prototype.slice.call(document.querySelectorAll('p.r2-para'));
 
@@ -885,17 +936,54 @@ mark.r2-decoration-underline {
         p.dataset.rawText = p.textContent || "";
     });
 
+    function syncPagedGeometry() {
+        if (!state.isPaged) {
+            contentEl.style.width = '';
+            contentEl.style.columnCount = '';
+            contentEl.style.columnWidth = '';
+            contentEl.style.columnGap = '';
+            contentEl.style.paddingLeft = '';
+            contentEl.style.paddingRight = '';
+            return;
+        }
+        var rawW = (viewportEl && viewportEl.getBoundingClientRect().width) ||
+            document.documentElement.clientWidth ||
+            window.innerWidth;
+        var pageW = Math.max(1, Math.floor(rawW));
+        var rawMargin = parseFloat(
+            getComputedStyle(document.documentElement).getPropertyValue('--RS__pageMargins')
+        ) || 24;
+        var marginPx = Math.max(8, Math.round(rawMargin));
+        var colW = Math.max(40, pageW - (marginPx * 2));
+        var colGap = marginPx * 2;
+
+        state.pageStride = pageW;
+        contentEl.style.width = pageW + 'px';
+        contentEl.style.paddingLeft = marginPx + 'px';
+        contentEl.style.paddingRight = marginPx + 'px';
+        contentEl.style.columnCount = '1';
+        contentEl.style.columnWidth = colW + 'px';
+        contentEl.style.columnGap = colGap + 'px';
+    }
+
     function getPageStride() {
-        return Math.max(1, window.innerWidth);
+        if (state.isPaged && state.pageStride > 0) {
+            return state.pageStride;
+        }
+        var rawW = (viewportEl && viewportEl.getBoundingClientRect().width) ||
+            document.documentElement.clientWidth ||
+            window.innerWidth;
+        return Math.max(1, Math.floor(rawW));
     }
 
     function computeTotalPages() {
+        syncPagedGeometry();
         if (!state.isPaged) {
             var docH = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight, 1);
             var winH = Math.max(window.innerHeight, 1);
             return Math.max(1, Math.ceil(docH / winH));
         }
-        var scrollW = contentEl.scrollWidth || window.innerWidth;
+        var scrollW = contentEl.scrollWidth || getPageStride();
         var stride = getPageStride();
         return Math.max(1, Math.round(scrollW / stride));
     }
@@ -1024,6 +1112,7 @@ mark.r2-decoration-underline {
         state.isFixedLayout = !!cfg.isFixedLayout;
         state.isRtl = !!cfg.isRtl;
         document.body.className = state.isPaged ? 'paged-mode' : 'scroll-mode';
+        syncPagedGeometry();
         if (!state.isPaged) {
             contentEl.style.transform = 'none';
         }
@@ -1351,6 +1440,77 @@ mark.r2-decoration-underline {
 </body>
 </html>
             """.trimIndent()
+        }
+
+        fun flattenTableOfContentsLinks(
+            publication: Publication,
+            links: List<Link> = publication.tableOfContents,
+            resolveCharOffset: ((Link, Locator?) -> Int?)? = null,
+            totalChars: Int = 0
+        ): List<ReadiumTocEntry> {
+            val out = mutableListOf<ReadiumTocEntry>()
+            var counter = 0
+
+            fun walk(items: List<Link>, depth: Int) {
+                for (link in items) {
+                    val idx = counter++
+                    val baseLocator = publication.locatorFromLink(link)
+                    val resolvedOffset = resolveCharOffset?.invoke(link, baseLocator)
+                    val finalLocator = if (resolvedOffset != null) {
+                        val safeTotal = totalChars.coerceAtLeast(1)
+                        val totalProg = (resolvedOffset.toDouble() / safeTotal.toDouble()).coerceIn(0.0, 1.0)
+                        if (baseLocator != null) {
+                            baseLocator.copy(
+                                title = link.title ?: baseLocator.title,
+                                locations = baseLocator.locations.copy(
+                                    totalProgression = baseLocator.locations.totalProgression ?: totalProg,
+                                    otherLocations = baseLocator.locations.otherLocations + ("charOffset" to resolvedOffset)
+                                )
+                            )
+                        } else {
+                            Locator(
+                                href = Url("chapter.xhtml")!!,
+                                mediaType = MediaType.XHTML,
+                                title = link.title,
+                                locations = Locator.Locations(
+                                    progression = totalProg,
+                                    totalProgression = totalProg,
+                                    otherLocations = mapOf("charOffset" to resolvedOffset)
+                                )
+                            )
+                        }
+                    } else {
+                        baseLocator
+                    }
+
+                    val rawHref = link.href.toString()
+                    val fallbackLabel = rawHref
+                        .substringBefore('#')
+                        .substringAfterLast('/')
+                        .substringBeforeLast('.')
+                        .replace('_', ' ')
+                        .replace('-', ' ')
+                        .trim()
+                        .ifBlank { "Chapter ${idx + 1}" }
+                    val displayTitle = link.title?.trim()?.takeIf { it.isNotEmpty() } ?: fallbackLabel
+
+                    out.add(
+                        ReadiumTocEntry(
+                            id = "${idx}_$rawHref",
+                            title = displayTitle,
+                            depth = depth,
+                            link = link,
+                            locator = finalLocator
+                        )
+                    )
+                    if (link.children.isNotEmpty()) {
+                        walk(link.children, depth + 1)
+                    }
+                }
+            }
+
+            walk(links, 0)
+            return out
         }
 
         private fun escapeHtml(raw: String): String {

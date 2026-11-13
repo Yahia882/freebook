@@ -10,6 +10,9 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -28,6 +31,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -57,6 +61,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -68,6 +73,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -86,6 +92,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.freebook.data.EpubParser
 import com.example.freebook.model.AnnotationType
 import com.example.freebook.model.Book
 import com.example.freebook.model.BookAnnotation
@@ -104,6 +111,7 @@ import com.example.freebook.ui.components.SearchVectorIcon
 import com.example.freebook.ui.reader.ReadiumActionModeSession
 import com.example.freebook.ui.reader.ReadiumPdfReaderHost
 import com.example.freebook.ui.reader.ReadiumSelectionWebView
+import com.example.freebook.ui.reader.ReadiumTocEntry
 import com.example.freebook.ui.reader.ReadiumWebViewNavigator
 import com.example.freebook.ui.theme.LocalBookFreePalette
 import kotlinx.coroutines.Dispatchers
@@ -111,7 +119,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.readium.r2.navigator.DecorableNavigator
 import org.readium.r2.shared.ExperimentalReadiumApi
+import org.readium.r2.shared.publication.Locator
 import java.util.Locale
+import kotlin.math.roundToInt
 
 private fun normalizeCanonicalText(raw: String): String =
     raw.replace("\r\n", "\n")
@@ -172,6 +182,7 @@ fun BookReaderScreen(
     var isActiveReaderHudVisible by rememberSaveable { mutableStateOf(false) }
     var isBottomBarExpanded by rememberSaveable { mutableStateOf(false) }
     var showThemesBottomSheet by rememberSaveable { mutableStateOf(false) }
+    var showTocBottomSheet by rememberSaveable { mutableStateOf(false) }
     var activeHighlightColor by rememberSaveable { mutableStateOf(HighlightColor.YELLOW) }
 
     LaunchedEffect(isActiveReaderHudVisible) {
@@ -189,6 +200,9 @@ fun BookReaderScreen(
     var isWebViewDocumentReady by remember(book.id) { mutableStateOf(false) }
     var isPdfDocumentReady by remember(book.id) { mutableStateOf(false) }
     var pdfJumpToPage by remember(book.id) { mutableStateOf<((Int) -> Unit)?>(null) }
+    var pdfTocEntries by remember(book.id) { mutableStateOf<List<ReadiumTocEntry>>(emptyList()) }
+    var pdfNavigateToTocEntry by remember(book.id) { mutableStateOf<((ReadiumTocEntry) -> Unit)?>(null) }
+    var pdfCurrentLocator by remember(book.id) { mutableStateOf<Locator?>(null) }
     val isBookContentLoaded = if (book.layoutType == PublicationLayoutType.FIXED) {
         isPdfDocumentReady
     } else {
@@ -265,6 +279,73 @@ fun BookReaderScreen(
 
     // Readium DecorableNavigator instance managing the WebView and Readium Decorations
     val readiumNavigator = remember(book.id) { ReadiumWebViewNavigator() }
+
+    LaunchedEffect(readiumNavigator, canonicalBookText.length) {
+        readiumNavigator.totalCanonicalChars = canonicalBookText.length
+    }
+
+    val webViewCurrentLocator by readiumNavigator.currentLocator.collectAsState()
+
+    val reflowableTocEntries by produceState(
+        initialValue = emptyList(),
+        key1 = book.id,
+        key2 = canonicalBookText.length
+    ) {
+        if (book.layoutType == PublicationLayoutType.REFLOWABLE && canonicalBookText.isNotEmpty()) {
+            val loaded = EpubParser.loadReflowableTableOfContents(
+                context = context,
+                book = book,
+                canonicalBookText = canonicalBookText
+            )
+            readiumNavigator.registerTableOfContents(loaded)
+            value = loaded
+        } else {
+            value = emptyList()
+        }
+    }
+
+    val tableOfContentsEntries = if (book.layoutType == PublicationLayoutType.FIXED) {
+        pdfTocEntries
+    } else {
+        reflowableTocEntries
+    }
+
+    val activeCurrentLocator = if (book.layoutType == PublicationLayoutType.FIXED) {
+        pdfCurrentLocator
+    } else {
+        webViewCurrentLocator
+    }
+
+    val currentProgressionFraction by remember(
+        book.layoutType,
+        activeCurrentLocator,
+        derivedCurrentPosition,
+        derivedTotalPositions,
+        readingPercent,
+        isInitialPositionRestored,
+        isPdfDocumentReady
+    ) {
+        derivedStateOf {
+            val isReady = if (book.layoutType == PublicationLayoutType.FIXED) {
+                isPdfDocumentReady
+            } else {
+                isInitialPositionRestored
+            }
+            val locatorProg = activeCurrentLocator?.locations?.totalProgression?.toFloat()
+            when {
+                derivedTotalPositions > 1 && derivedCurrentPosition >= derivedTotalPositions -> 1f
+                isReady && locatorProg != null -> locatorProg.coerceIn(0f, 1f)
+                else -> (readingPercent / 100f).coerceIn(0f, 1f)
+            }
+        }
+    }
+
+    val animatedProgressFill by animateFloatAsState(
+        targetValue = currentProgressionFraction,
+        animationSpec = if (preferences.enablePageAnimations) tween(durationMillis = 220) else snap(),
+        label = "contents_progress_fill"
+    )
+    val displayProgressInt = (currentProgressionFraction * 100f).roundToInt().coerceIn(0, 100)
 
     val latestCharOffset by rememberUpdatedState(currentCharOffset)
     val latestTotalChars by rememberUpdatedState(canonicalBookText.length)
@@ -553,6 +634,15 @@ fun BookReaderScreen(
                 },
                 onBindNavigator = { jumper ->
                     pdfJumpToPage = jumper
+                },
+                onTableOfContentsLoaded = { entries ->
+                    pdfTocEntries = entries
+                },
+                onCurrentLocatorChanged = { locator ->
+                    pdfCurrentLocator = locator
+                },
+                onBindTocNavigator = { nav ->
+                    pdfNavigateToTocEntry = nav
                 },
                 modifier = Modifier
                     .widthIn(max = 820.dp)
@@ -1209,6 +1299,202 @@ fun BookReaderScreen(
                                             fontWeight = FontWeight.Medium,
                                             color = palette.textMuted,
                                             maxLines = 1
+                                        )
+                                    }
+                                }
+
+                                // 3. FULL-WIDTH BOTTOM BUTTON: "Contents · {progress}%" with live progress fill
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(36.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.Transparent)
+                                        .border(1.dp, palette.borderSubtle, CircleShape)
+                                        .clickable {
+                                            showTocBottomSheet = true
+                                        }
+                                ) {
+                                    if (animatedProgressFill > 0f) {
+                                        Box(
+                                            modifier = Modifier
+                                                .align(AbsoluteAlignment.CenterLeft)
+                                                .fillMaxHeight()
+                                                .fillMaxWidth(animatedProgressFill.coerceIn(0f, 1f))
+                                                .background(
+                                                    if (palette.isDark) Color.White.copy(alpha = 0.12f)
+                                                    else Color.Black.copy(alpha = 0.08f)
+                                                )
+                                        )
+                                    }
+
+                                    Text(
+                                        text = "Contents · ${displayProgressInt}%",
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = palette.textPrimary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier
+                                            .align(Alignment.Center)
+                                            .padding(horizontal = 14.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // =========================================================================
+        // MODAL BOTTOM SHEET: "Table of Contents" (Readium publication.tableOfContents)
+        // =========================================================================
+        if (showTocBottomSheet) {
+            val tocSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+            val activeTocEntryId = remember(
+                tableOfContentsEntries,
+                book.layoutType,
+                currentCharOffset,
+                currentProgressionFraction,
+                activeCurrentLocator
+            ) {
+                if (tableOfContentsEntries.isEmpty()) {
+                    null
+                } else if (book.layoutType == PublicationLayoutType.REFLOWABLE) {
+                    tableOfContentsEntries.lastOrNull { entry ->
+                        val offset = (entry.locator?.locations?.otherLocations?.get("charOffset") as? Number)?.toInt()
+                        offset != null && offset <= currentCharOffset + 12
+                    }?.id ?: tableOfContentsEntries.first().id
+                } else {
+                    tableOfContentsEntries.lastOrNull { entry ->
+                        val entryProg = entry.locator?.locations?.totalProgression?.toFloat()
+                        if (entryProg != null) {
+                            entryProg <= currentProgressionFraction + 0.005f
+                        } else {
+                            entry.locator?.href == activeCurrentLocator?.href
+                        }
+                    }?.id
+                }
+            }
+
+            ModalBottomSheet(
+                onDismissRequest = { showTocBottomSheet = false },
+                sheetState = tocSheetState,
+                containerColor = palette.menuSurface,
+                contentColor = palette.textPrimary
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 8.dp)
+                        .padding(bottom = 28.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = "Contents",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = palette.textPrimary
+                        )
+                        Text(
+                            text = "${book.title} · ${displayProgressInt}% read",
+                            fontSize = 12.sp,
+                            color = palette.textMuted,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    if (tableOfContentsEntries.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 28.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "No table of contents available for this book.",
+                                fontSize = 13.5.sp,
+                                color = palette.textMuted,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 420.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            items(
+                                items = tableOfContentsEntries,
+                                key = { it.id },
+                                contentType = { "toc_chapter_entry" }
+                            ) { entry ->
+                                val isCurrentChapter = entry.id == activeTocEntryId
+                                val indentDp = (entry.depth.coerceIn(0, 4) * 14).dp
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(start = indentDp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(
+                                            if (isCurrentChapter) {
+                                                if (palette.isDark) Color.White.copy(alpha = 0.08f)
+                                                else Color.Black.copy(alpha = 0.05f)
+                                            } else {
+                                                Color.Transparent
+                                            }
+                                        )
+                                        .border(
+                                            width = 1.dp,
+                                            color = if (isCurrentChapter) palette.borderSubtle else Color.Transparent,
+                                            shape = RoundedCornerShape(12.dp)
+                                        )
+                                        .clickable {
+                                            if (book.layoutType == PublicationLayoutType.FIXED) {
+                                                pdfNavigateToTocEntry?.invoke(entry)
+                                            } else {
+                                                val targetLoc = entry.locator
+                                                if (targetLoc != null) {
+                                                    val offset = (targetLoc.locations.otherLocations["charOffset"] as? Number)?.toInt()
+                                                    if (offset != null) {
+                                                        currentCharOffset = offset
+                                                    }
+                                                    readiumNavigator.go(targetLoc, animated = false)
+                                                } else {
+                                                    readiumNavigator.go(entry.link, animated = false)
+                                                }
+                                            }
+                                            showTocBottomSheet = false
+                                        }
+                                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = entry.title,
+                                        fontSize = if (entry.depth == 0) 14.sp else 13.sp,
+                                        fontWeight = if (isCurrentChapter) FontWeight.SemiBold else FontWeight.Normal,
+                                        color = if (isCurrentChapter) palette.textPrimary else palette.textSecondary,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+
+                                    val entryPercent = entry.locator?.locations?.totalProgression?.let {
+                                        (it * 100.0).roundToInt().coerceIn(0, 100)
+                                    }
+                                    if (entryPercent != null) {
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Text(
+                                            text = "${entryPercent}%",
+                                            fontSize = 11.5.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = palette.textMuted
                                         )
                                     }
                                 }

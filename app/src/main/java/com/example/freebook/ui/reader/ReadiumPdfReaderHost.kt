@@ -52,7 +52,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 private data class LoadedPdfPublication(
     val publication: Publication,
-    val positions: List<Locator>
+    val positions: List<Locator>,
+    val tocEntries: List<ReadiumTocEntry>
 )
 
 @OptIn(ExperimentalReadiumApi::class)
@@ -87,6 +88,9 @@ fun ReadiumPdfReaderHost(
     onLocatorChanged: (locatorJson: String, pageNumber: Int, totalPages: Int, progressPercent: Float) -> Unit,
     onSingleTap: () -> Unit,
     onBindNavigator: ((jumpToPage: (Int) -> Unit) -> Unit)? = null,
+    onTableOfContentsLoaded: (List<ReadiumTocEntry>) -> Unit = {},
+    onCurrentLocatorChanged: (Locator) -> Unit = {},
+    onBindTocNavigator: (((ReadiumTocEntry) -> Unit) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -97,6 +101,9 @@ fun ReadiumPdfReaderHost(
     val latestOnLocatorChanged by rememberUpdatedState(onLocatorChanged)
     val latestOnSingleTap by rememberUpdatedState(onSingleTap)
     val latestOnBindNavigator by rememberUpdatedState(onBindNavigator)
+    val latestOnTableOfContentsLoaded by rememberUpdatedState(onTableOfContentsLoaded)
+    val latestOnCurrentLocatorChanged by rememberUpdatedState(onCurrentLocatorChanged)
+    val latestOnBindTocNavigator by rememberUpdatedState(onBindTocNavigator)
 
     val isVerticalScrollRef = remember(book.id) {
         AtomicBoolean(navigationMode == ReaderNavigationMode.VERTICAL_SCROLL)
@@ -126,7 +133,17 @@ fun ReadiumPdfReaderHost(
             val publication = opener.open(asset, allowUserInteraction = false).getOrNull()
                 ?: return@withContext null
             val positions = runCatching { publication.positions() }.getOrDefault(emptyList())
-            LoadedPdfPublication(publication = publication, positions = positions)
+            val tocEntries = runCatching {
+                ReadiumWebViewNavigator.flattenTableOfContentsLinks(
+                    publication = publication,
+                    links = publication.tableOfContents
+                )
+            }.getOrDefault(emptyList())
+            LoadedPdfPublication(
+                publication = publication,
+                positions = positions,
+                tocEntries = tocEntries
+            )
         }
     }
 
@@ -135,6 +152,12 @@ fun ReadiumPdfReaderHost(
     val positions = loadedPdf?.positions.orEmpty()
     var activeFragment by remember(book.id) {
         mutableStateOf<PdfNavigatorFragment<PdfiumSettings, PdfiumPreferences>?>(null)
+    }
+
+    LaunchedEffect(loadedPdf) {
+        if (loadedPdf != null) {
+            latestOnTableOfContentsLoaded(loadedPdf.tocEntries)
+        }
     }
 
     DisposableEffect(publication) {
@@ -150,7 +173,7 @@ fun ReadiumPdfReaderHost(
         frag.submitPreferences(buildPdfiumPreferences(navigationMode, book.readingDirection))
     }
 
-    // Bind page jumper & observe Readium's currentLocator StateFlow for progress persistence
+    // Bind page jumper, TOC navigator & observe Readium's currentLocator StateFlow for progress persistence
     LaunchedEffect(activeFragment, loadedPdf) {
         val frag = activeFragment ?: return@LaunchedEffect
         val loaded = loadedPdf ?: return@LaunchedEffect
@@ -172,7 +195,17 @@ fun ReadiumPdfReaderHost(
             }
         }
 
+        latestOnBindTocNavigator?.invoke { entry ->
+            val targetLocator = entry.locator ?: pub.locatorFromLink(entry.link)
+            if (targetLocator != null) {
+                frag.go(targetLocator, animated = false)
+            } else {
+                frag.go(entry.link, animated = false)
+            }
+        }
+
         frag.currentLocator.collect { locator ->
+            latestOnCurrentLocatorChanged(locator)
             val pageNumber = (
                 locator.locations.position
                     ?: locator.locations.totalProgression?.let { (it * totalPages).toInt() + 1 }

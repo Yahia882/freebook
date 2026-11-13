@@ -10,6 +10,8 @@ description: >-
 
 Use the `android` CLI (`C:\Users\Yahia\AppData\AndroidCLI\android.exe`) to interact directly with the running Android Studio instance (`Quail 4 | 2026.1.4 Patch 1`) and inspect or build `MyBookFreeApp`.
 
+> **Important (Windows Sandbox):** Never run `android.exe` or `.\gradlew.bat` inside the sandbox (`BypassSandbox: false`) in this workspace — always request unsandboxed execution (`BypassSandbox: true`) or skip sandboxed Gradle runs.
+
 ## Core Android Studio Commands
 
 1. **Check Android Studio Connection & Project Readiness**

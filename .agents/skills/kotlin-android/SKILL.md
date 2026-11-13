@@ -39,4 +39,5 @@ description: >-
 4. **Edge-to-Edge & Insets**:
    - Maintain `enableEdgeToEdge()` and `WindowInsets.safeDrawing` padding at the root container.
 5. **Verification**:
-   - After editing Kotlin or Compose files, verify compilation and IDE diagnostics using the `android-studio` skill (`android studio analyze-file`) or `./gradlew assembleDebug`.
+   - **Never run Gradle (`.\gradlew.bat` / `./gradlew`) or `android.exe` inside the sandbox (`BypassSandbox: false`)** — on Windows they hang or fail because `~/.gradle`, the Android SDK, and the Gradle Daemon loopback socket are outside the sandbox.
+   - Always run Gradle builds/checks with `BypassSandbox: true`, or skip sandboxed Gradle runs if unsandboxed execution isn't required.

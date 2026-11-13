@@ -7,9 +7,12 @@ import android.provider.OpenableColumns
 import androidx.core.text.HtmlCompat
 import com.example.freebook.data.storage.BookFileStorage
 import com.example.freebook.data.storage.ContentIdentityHasher
+import com.example.freebook.model.Book
 import com.example.freebook.model.BookReadingDirection
 import com.example.freebook.model.PublicationLayoutType
 import com.example.freebook.model.StagedBookImport
+import com.example.freebook.ui.reader.ReadiumTocEntry
+import com.example.freebook.ui.reader.ReadiumWebViewNavigator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.readium.adapter.pdfium.document.PdfiumDocumentFactory
@@ -108,6 +111,168 @@ object EpubParser {
         val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
             ?: return@withContext null
         fileStorage.saveCoverImageBytes(bytes)
+    }
+
+    private data class SpineChapterSlice(
+        val startOffset: Int,
+        val endOffset: Int,
+        val rawHtml: String
+    )
+
+    private fun normalizeCanonicalSegment(raw: String): String =
+        raw.replace("\r\n", "\n")
+            .replace('\r', '\n')
+            .replace(Regex("[ \\t]+"), " ")
+            .replace(Regex("\\n{3,}"), "\n\n")
+            .trim()
+
+    /**
+     * Opens the book's Readium [Publication] on [Dispatchers.IO], retrieves `publication.tableOfContents`,
+     * and resolves each chapter [org.readium.r2.shared.publication.Link] to a Readium
+     * [org.readium.r2.shared.publication.Locator] mapped to its canonical character offset.
+     */
+    @OptIn(ExperimentalReadiumApi::class)
+    suspend fun loadReflowableTableOfContents(
+        context: Context,
+        book: Book,
+        canonicalBookText: String
+    ): List<ReadiumTocEntry> = withContext(Dispatchers.IO) {
+        if (book.bookFilePath.isBlank()) return@withContext emptyList()
+        val bookFile = File(book.bookFilePath)
+        if (!bookFile.exists()) return@withContext emptyList()
+
+        val httpClient = DefaultHttpClient()
+        val assetRetriever = AssetRetriever(
+            contentResolver = context.contentResolver,
+            httpClient = httpClient
+        )
+        val pdfFactory = PdfiumDocumentFactory(context)
+        val publicationOpener = PublicationOpener(
+            publicationParser = DefaultPublicationParser(
+                context = context,
+                httpClient = httpClient,
+                assetRetriever = assetRetriever,
+                pdfFactory = pdfFactory
+            )
+        )
+
+        val asset = assetRetriever.retrieve(bookFile.toUrl()).getOrNull() ?: return@withContext emptyList()
+        val publication = publicationOpener.open(asset, allowUserInteraction = false).getOrNull()
+        if (publication == null) {
+            runCatching { asset.close() }
+            return@withContext emptyList()
+        }
+
+        try {
+            val rawTocLinks = publication.tableOfContents
+            if (rawTocLinks.isEmpty()) return@withContext emptyList()
+
+            val slicesByHref = LinkedHashMap<String, SpineChapterSlice>()
+            var rollingOffset = 0
+            val totalLen = canonicalBookText.length
+
+            for (spineLink in publication.readingOrder) {
+                val resource = publication.get(spineLink) ?: continue
+                val rawBytes = resource.use { res -> res.read().getOrNull() } ?: continue
+                if (rawBytes.isEmpty()) continue
+
+                val rawHtml = rawBytes.toString(Charsets.UTF_8)
+                val cleaned = htmlToCleanText(rawHtml)
+                val normalized = normalizeCanonicalSegment(cleaned)
+
+                val sliceStart: Int
+                val sliceEnd: Int
+                if (normalized.length > 15 && totalLen > 0) {
+                    val probe = normalized.take(80)
+                    val matchedStart = canonicalBookText.indexOf(probe, startIndex = rollingOffset)
+                        .takeIf { it >= 0 }
+                        ?: rollingOffset.coerceIn(0, (totalLen - 1).coerceAtLeast(0))
+                    sliceStart = matchedStart
+                    sliceEnd = (sliceStart + normalized.length).coerceAtMost(totalLen)
+                    rollingOffset = (sliceEnd + 2).coerceAtMost(totalLen)
+                } else {
+                    sliceStart = rollingOffset.coerceIn(0, (totalLen - 1).coerceAtLeast(0))
+                    sliceEnd = sliceStart
+                }
+
+                val slice = SpineChapterSlice(
+                    startOffset = sliceStart,
+                    endOffset = sliceEnd,
+                    rawHtml = rawHtml
+                )
+
+                val locatorHrefKey = publication.locatorFromLink(spineLink)?.href?.toString()
+                if (!locatorHrefKey.isNullOrBlank()) {
+                    slicesByHref[locatorHrefKey] = slice
+                    slicesByHref[Uri.decode(locatorHrefKey)] = slice
+                }
+                val cleanHrefKey = spineLink.href.toString().substringBefore('#').trimStart('/')
+                if (cleanHrefKey.isNotEmpty()) {
+                    slicesByHref[cleanHrefKey] = slice
+                    slicesByHref[Uri.decode(cleanHrefKey)] = slice
+                }
+            }
+
+            ReadiumWebViewNavigator.flattenTableOfContentsLinks(
+                publication = publication,
+                links = rawTocLinks,
+                totalChars = totalLen,
+                resolveCharOffset = { tocLink, baseLocator ->
+                    val locatorHref = baseLocator?.href?.toString().orEmpty()
+                    val cleanLinkHref = tocLink.href.toString().substringBefore('#').trimStart('/')
+                    val slice = slicesByHref[locatorHref]
+                        ?: slicesByHref[Uri.decode(locatorHref)]
+                        ?: slicesByHref[cleanLinkHref]
+                        ?: slicesByHref[Uri.decode(cleanLinkHref)]
+                        ?: slicesByHref.entries.firstOrNull { (k, _) ->
+                            cleanLinkHref.isNotEmpty() && (k.endsWith("/$cleanLinkHref") || cleanLinkHref.endsWith("/$k"))
+                        }?.value
+
+                    var resolved = slice?.startOffset ?: 0
+                    val fragmentId = baseLocator?.locations?.fragments?.firstOrNull()?.takeIf { it.isNotBlank() }
+                        ?: tocLink.href.toString().substringAfter('#', "").takeIf { it.isNotBlank() }
+
+                    if (fragmentId != null && slice != null && totalLen > 0) {
+                        val decodedFrag = Uri.decode(fragmentId)
+                        val fragPattern = Regex(
+                            """(?:id|name)\s*=\s*["']${Regex.escape(decodedFrag)}["']""",
+                            RegexOption.IGNORE_CASE
+                        )
+                        val match = fragPattern.find(slice.rawHtml)
+                        var refined = false
+                        if (match != null) {
+                            val snippet = normalizeCanonicalSegment(
+                                htmlToCleanText(slice.rawHtml.substring(match.range.first))
+                            ).lineSequence().firstOrNull { it.isNotBlank() }?.take(80)
+                            if (!snippet.isNullOrBlank()) {
+                                val foundIdx = canonicalBookText.indexOf(snippet, startIndex = slice.startOffset)
+                                if (foundIdx in slice.startOffset..slice.endOffset) {
+                                    resolved = foundIdx
+                                    refined = true
+                                }
+                            }
+                        }
+                        if (!refined && !tocLink.title.isNullOrBlank()) {
+                            val titleProbe = tocLink.title!!.trim()
+                            val foundByTitle = canonicalBookText.indexOf(
+                                titleProbe,
+                                startIndex = slice.startOffset,
+                                ignoreCase = true
+                            )
+                            if (foundByTitle in slice.startOffset..slice.endOffset) {
+                                resolved = foundByTitle
+                            }
+                        }
+                    }
+
+                    resolved.coerceIn(0, (totalLen - 1).coerceAtLeast(0))
+                }
+            )
+        } catch (_: Exception) {
+            emptyList()
+        } finally {
+            runCatching { publication.close() }
+        }
     }
 
     private data class ParsedBookPayload(
