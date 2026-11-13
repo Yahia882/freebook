@@ -78,7 +78,14 @@ class BookFreeViewModel(
 
     fun importBook(context: Context, uri: Uri) {
         viewModelScope.launch {
-            when (val result = bookRepository.importBookFromUri(context.applicationContext, uri)) {
+            val appContext = context.applicationContext
+            if (com.example.freebook.data.EpubParser.resolveSupportedExtension(appContext, uri) == null) {
+                transientState.update {
+                    it.copy(toastMessage = com.example.freebook.data.EpubParser.UNSUPPORTED_FORMAT_MESSAGE)
+                }
+                return@launch
+            }
+            when (val result = bookRepository.importBookFromUri(appContext, uri)) {
                 is BookImportResult.Imported -> {
                     transientState.update {
                         it.copy(toastMessage = "Imported \"${result.book.title}\"")

@@ -363,7 +363,7 @@ fun LibraryScreen(
                         Spacer(modifier = Modifier.height(8.dp))
 
                         Text(
-                            text = "Add Epub files to begin reading",
+                            text = "Supports EPUB and PDF",
                             fontSize = 14.sp,
                             lineHeight = 20.sp,
                             color = palette.textMuted,

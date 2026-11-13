@@ -381,7 +381,7 @@ fun BookFreeApp(
         }
     }
 
-    // Document Picker Launcher for EPUB / PDF / TXT books
+    // Document Picker Launcher strictly for EPUB / PDF books
     val bookPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -527,10 +527,7 @@ fun BookFreeApp(
                                 bookPickerLauncher.launch(
                                     arrayOf(
                                         "application/epub+zip",
-                                        "application/pdf",
-                                        "text/plain",
-                                        "application/octet-stream",
-                                        "*/*"
+                                        "application/pdf"
                                     )
                                 )
                             },

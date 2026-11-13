@@ -32,26 +32,45 @@ import org.xmlpull.v1.XmlPullParserFactory
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.Locale
 import java.util.zip.ZipInputStream
 
 object EpubParser {
 
+    const val UNSUPPORTED_FORMAT_MESSAGE = "Unsupported format. Please import an EPUB or PDF file."
+    private val supportedExtensions = setOf("epub", "pdf")
     private val rtlLanguagePrefixes = setOf("ar", "he", "iw", "fa", "ur", "yi", "ps", "sd", "ug")
+
+    /**
+     * Resolves the file extension for [uri] and returns `"epub"` or `"pdf"` if strictly supported,
+     * or `null` if the file has an unsupported extension or no extension at all.
+     */
+    suspend fun resolveSupportedExtension(context: Context, uri: Uri): String? =
+        withContext(Dispatchers.IO) {
+            val fileName = getFileName(context, uri)?.trim()?.takeIf { it.isNotBlank() }
+                ?: return@withContext null
+            extractSupportedExtension(fileName)
+        }
+
+    private fun extractSupportedExtension(fileName: String): String? {
+        val cleanName = fileName.trim()
+        val dotIndex = cleanName.lastIndexOf('.')
+        if (dotIndex <= 0 || dotIndex == cleanName.lastIndex) return null
+        val ext = cleanName.substring(dotIndex + 1).trim().lowercase(Locale.ROOT)
+        return ext.takeIf { it in supportedExtensions }
+    }
 
     suspend fun stageBookFromUri(
         context: Context,
         uri: Uri,
         fileStorage: BookFileStorage
     ): StagedBookImport? = withContext(Dispatchers.IO) {
-        val fileName = getFileName(context, uri) ?: "Imported Book.epub"
-        val extension = fileName.substringAfterLast('.', "epub").lowercase()
+        val fileName = getFileName(context, uri)?.trim()?.takeIf { it.isNotBlank() }
+            ?: return@withContext null
+        val extension = extractSupportedExtension(fileName)
+            ?: return@withContext null
         val fallbackTitle = fileName
-            .removeSuffix(".epub")
-            .removeSuffix(".EPUB")
-            .removeSuffix(".pdf")
-            .removeSuffix(".PDF")
-            .removeSuffix(".txt")
-            .removeSuffix(".TXT")
+            .substringBeforeLast('.')
             .replace('_', ' ')
             .replace('-', ' ')
             .trim()
@@ -68,6 +87,7 @@ object EpubParser {
                 context = context.applicationContext,
                 savedRawPath = savedRawPath,
                 rawBytes = rawBytes,
+                extension = extension,
                 fallbackTitle = fallbackTitle,
                 fileStorage = fileStorage
             )
@@ -298,6 +318,7 @@ object EpubParser {
         context: Context,
         savedRawPath: String,
         rawBytes: ByteArray,
+        extension: String,
         fallbackTitle: String,
         fileStorage: BookFileStorage
     ): ParsedBookPayload {
@@ -430,28 +451,16 @@ object EpubParser {
             }
         }
 
-        // Fallback for non-standard ZIP/EPUB or plain TXT files
-        val isZip = rawBytes.size >= 4 &&
+        // Fallback strictly for non-standard ZIP/EPUB archives only
+        val isZip = extension == "epub" &&
+            rawBytes.size >= 4 &&
             rawBytes[0] == 'P'.code.toByte() &&
             rawBytes[1] == 'K'.code.toByte()
 
-        return if (isZip) {
-            parseZipEpubFallback(rawBytes, fallbackTitle, fileStorage)
-        } else {
-            val text = rawBytes.toString(Charsets.UTF_8).trim().ifBlank {
-                "$fallbackTitle\n\nImported plain-text edition."
-            }
-            val detectedRtl = containsMostlyRtlCharacters(text)
-            ParsedBookPayload(
-                title = fallbackTitle,
-                author = "Imported Edition",
-                fullText = text,
-                coverImagePath = null,
-                layoutType = PublicationLayoutType.REFLOWABLE,
-                readingDirection = if (detectedRtl) BookReadingDirection.RTL else BookReadingDirection.LTR,
-                language = if (detectedRtl) "ar" else "en"
-            )
+        if (isZip) {
+            return parseZipEpubFallback(rawBytes, fallbackTitle, fileStorage)
         }
+        throw IllegalArgumentException(UNSUPPORTED_FORMAT_MESSAGE)
     }
 
     private fun containsMostlyRtlCharacters(text: String): Boolean {
@@ -754,16 +763,27 @@ object EpubParser {
     private fun getFileName(context: Context, uri: Uri): String? {
         var name: String? = null
         if (uri.scheme == "content") {
-            context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (idx >= 0) {
-                        name = cursor.getString(idx)
+            runCatching {
+                context.contentResolver.query(
+                    uri,
+                    arrayOf(OpenableColumns.DISPLAY_NAME),
+                    null,
+                    null,
+                    null
+                )?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (idx >= 0 && !cursor.isNull(idx)) {
+                            name = cursor.getString(idx)
+                        }
                     }
                 }
             }
         }
-        if (name == null) {
+        if (name.isNullOrBlank()) {
+            name = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':')
+        }
+        if (name.isNullOrBlank()) {
             name = uri.path?.substringAfterLast('/')
         }
         return name

@@ -71,6 +71,9 @@ class OfflineFirstBookRepository(
         .map { entities -> entities.map { it.toDomainModel() } }
 
     override suspend fun importBookFromUri(context: Context, uri: Uri): BookImportResult {
+        if (EpubParser.resolveSupportedExtension(context, uri) == null) {
+            return BookImportResult.Error(EpubParser.UNSUPPORTED_FORMAT_MESSAGE)
+        }
         val staged = EpubParser.stageBookFromUri(context, uri, fileStorage)
             ?: return BookImportResult.Error("Could not read the selected file.")
 
