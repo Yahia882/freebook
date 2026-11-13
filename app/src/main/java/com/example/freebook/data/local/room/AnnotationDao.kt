@@ -15,6 +15,15 @@ interface AnnotationDao {
     @Query("SELECT * FROM annotations WHERE bookId = :bookId ORDER BY pageNumber ASC, createdAt ASC")
     fun observeAnnotationsForBook(bookId: String): Flow<List<AnnotationEntity>>
 
+    @Query(
+        "SELECT * FROM annotations WHERE bookId = :bookId AND type = :type AND pageNumber = :pageNumber LIMIT 1"
+    )
+    suspend fun findAnnotationByBookTypeAndPage(
+        bookId: String,
+        type: String,
+        pageNumber: Int
+    ): AnnotationEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAnnotation(annotation: AnnotationEntity)
 

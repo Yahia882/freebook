@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.sp
 import com.example.freebook.model.AnnotationType
 import com.example.freebook.model.Book
 import com.example.freebook.model.BookAnnotation
+import com.example.freebook.model.PublicationLayoutType
 import com.example.freebook.ui.components.BackArrowIcon
 import com.example.freebook.ui.components.TopBarMoreMenuButton
 import com.example.freebook.ui.theme.LocalBookFreePalette
@@ -253,8 +254,17 @@ fun BookNotesDetailScreen(
                                 Spacer(modifier = Modifier.height(8.dp))
                             }
 
+                            val displayedAnnotationText = if (
+                                book.layoutType == PublicationLayoutType.FIXED &&
+                                item.type == AnnotationType.BOOKMARK
+                            ) {
+                                "Page ${item.pageNumber}"
+                            } else {
+                                item.text
+                            }
+
                             Text(
-                                text = item.text,
+                                text = displayedAnnotationText,
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.Normal,
                                 lineHeight = 23.sp,
@@ -361,8 +371,16 @@ fun BookNotesDetailScreen(
                 )
             },
             text = {
+                val previewText = if (
+                    book.layoutType == PublicationLayoutType.FIXED &&
+                    targetAnn.type == AnnotationType.BOOKMARK
+                ) {
+                    "Page ${targetAnn.pageNumber}"
+                } else {
+                    targetAnn.text
+                }
                 Text(
-                    text = "Delete this $label from Page ${targetAnn.pageNumber}?\n\n\"${targetAnn.text}\"",
+                    text = "Delete this $label from Page ${targetAnn.pageNumber}?\n\n\"$previewText\"",
                     fontSize = 14.sp,
                     lineHeight = 20.sp,
                     color = palette.textSecondary

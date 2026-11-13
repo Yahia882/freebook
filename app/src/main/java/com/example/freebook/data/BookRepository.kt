@@ -252,15 +252,41 @@ class OfflineFirstBookRepository(
         quotedText: String,
         highlightColorName: String
     ): BookAnnotation {
+        val safePageNumber = pageNumber.coerceAtLeast(1)
+        val storedBook = bookDao.getBookById(bookId)
+        val isFixedLayout = storedBook?.layoutType.equals(
+            PublicationLayoutType.FIXED.name,
+            ignoreCase = true
+        )
+
+        if (isFixedLayout && type == AnnotationType.BOOKMARK) {
+            val existing = annotationDao.findAnnotationByBookTypeAndPage(
+                bookId = bookId,
+                type = AnnotationType.BOOKMARK.name,
+                pageNumber = safePageNumber
+            )
+            if (existing != null) {
+                return existing.toDomainModel()
+            }
+        }
+
+        val resolvedCharOffset = if (isFixedLayout) 0 else charOffset.coerceAtLeast(0)
+        val resolvedEndCharOffset = if (isFixedLayout) 0 else endCharOffset.coerceAtLeast(0)
+        val resolvedText = if (isFixedLayout && type == AnnotationType.BOOKMARK) {
+            "Page $safePageNumber"
+        } else {
+            text
+        }
+
         val model = BookAnnotation(
             id = UUID.randomUUID().toString(),
             bookId = bookId,
             type = type,
-            pageNumber = pageNumber.coerceAtLeast(1),
-            charOffset = charOffset.coerceAtLeast(0),
-            endCharOffset = endCharOffset.coerceAtLeast(0),
-            text = text,
-            quotedText = quotedText,
+            pageNumber = safePageNumber,
+            charOffset = resolvedCharOffset,
+            endCharOffset = resolvedEndCharOffset,
+            text = resolvedText,
+            quotedText = if (isFixedLayout && type == AnnotationType.BOOKMARK) "" else quotedText,
             highlightColorName = highlightColorName.ifBlank { HighlightColor.YELLOW.name },
             timestampLabel = "Added today",
             createdAt = System.currentTimeMillis()

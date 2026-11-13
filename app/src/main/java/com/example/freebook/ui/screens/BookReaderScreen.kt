@@ -226,8 +226,13 @@ fun BookReaderScreen(
         mutableFloatStateOf(book.readingProgress.coerceIn(0.1f, 100f))
     }
 
-    LaunchedEffect(book.id, canonicalBookText.length) {
-        if (canonicalBookText.isNotEmpty() && !isInitialPositionRestored && currentCharOffset == 0) {
+    LaunchedEffect(book.id, book.layoutType, canonicalBookText.length) {
+        if (
+            book.layoutType == PublicationLayoutType.REFLOWABLE &&
+            canonicalBookText.isNotEmpty() &&
+            !isInitialPositionRestored &&
+            currentCharOffset == 0
+        ) {
             val savedOffset = book.resolveSavedCharOffset(canonicalBookText.length)
             if (savedOffset > 0) {
                 currentCharOffset = savedOffset
@@ -525,8 +530,8 @@ fun BookReaderScreen(
         if (book.layoutType == PublicationLayoutType.FIXED) {
             if (latestIsPdfReady && latestPdfLocatorJson.isNotBlank()) {
                 latestOnLocatorChanged(
-                    latestCharOffset,
-                    latestTotalChars.coerceAtLeast(100),
+                    0,
+                    1,
                     (latestDerivedPos - 1).coerceAtLeast(0),
                     latestDerivedTotalPos,
                     latestPdfLocatorJson,
@@ -576,11 +581,40 @@ fun BookReaderScreen(
         readiumNavigator.jumpToCharOffset(resolvedOffset)
     }
 
-    val currentPositionBookmark = remember(bookAnnotations, derivedCurrentPosition, currentCharOffset) {
-        bookAnnotations.firstOrNull { ann ->
-            ann.type == AnnotationType.BOOKMARK &&
-                (ann.pageNumber == derivedCurrentPosition ||
-                    (ann.charOffset > 0 && kotlin.math.abs(ann.charOffset - currentCharOffset) < 280))
+    val activePdfPageNumber by remember(
+        book.layoutType,
+        pdfCurrentLocator,
+        derivedCurrentPosition,
+        derivedTotalPositions
+    ) {
+        derivedStateOf {
+            val fragmentPage = pdfCurrentLocator?.locations?.fragments?.firstNotNullOfOrNull { token ->
+                token.removePrefix("page=")
+                    .takeIf { token.startsWith("page=", ignoreCase = true) }
+                    ?.toIntOrNull()
+            }
+            (pdfCurrentLocator?.locations?.position ?: fragmentPage ?: derivedCurrentPosition)
+                .coerceIn(1, derivedTotalPositions.coerceAtLeast(1))
+        }
+    }
+
+    val currentPositionBookmark = remember(
+        book.layoutType,
+        bookAnnotations,
+        activePdfPageNumber,
+        derivedCurrentPosition,
+        currentCharOffset
+    ) {
+        if (book.layoutType == PublicationLayoutType.FIXED) {
+            bookAnnotations.firstOrNull { ann ->
+                ann.type == AnnotationType.BOOKMARK && ann.pageNumber == activePdfPageNumber
+            }
+        } else {
+            bookAnnotations.firstOrNull { ann ->
+                ann.type == AnnotationType.BOOKMARK &&
+                    (ann.pageNumber == derivedCurrentPosition ||
+                        (ann.charOffset > 0 && kotlin.math.abs(ann.charOffset - currentCharOffset) < 280))
+            }
         }
     }
     val isCurrentPositionBookmarked = currentPositionBookmark != null
@@ -615,14 +649,11 @@ fun BookReaderScreen(
                     derivedTotalPositions = totalPages
                     currentPdfLocatorJson = locatorJson
                     currentPdfProgressPercent = progressPercent
-                    val safeTotal = totalPages.coerceAtLeast(1)
-                    val safeTextLen = canonicalBookText.length.coerceAtLeast(100)
-                    val pseudoOffset = ((pageNumber - 1).toFloat() / safeTotal.toFloat() * safeTextLen).toInt()
-                    currentCharOffset = pseudoOffset
-                    currentVisibleText = "Page $pageNumber of ${book.title}"
+                    currentCharOffset = 0
+                    currentVisibleText = "Page $pageNumber"
                     latestOnLocatorChanged(
-                        pseudoOffset,
-                        safeTextLen,
+                        0,
+                        1,
                         (pageNumber - 1).coerceAtLeast(0),
                         totalPages,
                         locatorJson,
@@ -1107,7 +1138,7 @@ fun BookReaderScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                // Bookmark Button: shows pressed state & saves the whole visible page
+                                // Bookmark Button: shows pressed state & saves the current page
                                 Box(
                                     modifier = Modifier
                                         .size(36.dp)
@@ -1115,23 +1146,43 @@ fun BookReaderScreen(
                                         .background(Color.Transparent)
                                         .border(1.dp, palette.borderSubtle, CircleShape)
                                         .clickable {
-                                            val existing = currentPositionBookmark
-                                            if (existing != null) {
-                                                onDeleteAnnotation(existing)
+                                            if (book.layoutType == PublicationLayoutType.FIXED) {
+                                                val matchingPdfBookmarks = bookAnnotations.filter { ann ->
+                                                    ann.type == AnnotationType.BOOKMARK &&
+                                                        ann.pageNumber == activePdfPageNumber
+                                                }
+                                                if (matchingPdfBookmarks.isNotEmpty()) {
+                                                    matchingPdfBookmarks.forEach { onDeleteAnnotation(it) }
+                                                } else {
+                                                    onAddAnnotation(
+                                                        AnnotationType.BOOKMARK,
+                                                        activePdfPageNumber,
+                                                        0,
+                                                        0,
+                                                        "Page $activePdfPageNumber",
+                                                        "",
+                                                        HighlightColor.YELLOW.name
+                                                    )
+                                                }
                                             } else {
-                                                val wholePageContent = currentVisibleText
-                                                    .ifBlank { "Page $derivedCurrentPosition" }
-                                                val endOffset = (currentCharOffset + wholePageContent.length)
-                                                    .coerceAtMost(canonicalBookText.length)
-                                                onAddAnnotation(
-                                                    AnnotationType.BOOKMARK,
-                                                    derivedCurrentPosition,
-                                                    currentCharOffset,
-                                                    endOffset,
-                                                    wholePageContent,
-                                                    "",
-                                                    HighlightColor.YELLOW.name
-                                                )
+                                                val existing = currentPositionBookmark
+                                                if (existing != null) {
+                                                    onDeleteAnnotation(existing)
+                                                } else {
+                                                    val wholePageContent = currentVisibleText
+                                                        .ifBlank { "Page $derivedCurrentPosition" }
+                                                    val endOffset = (currentCharOffset + wholePageContent.length)
+                                                        .coerceAtMost(canonicalBookText.length)
+                                                    onAddAnnotation(
+                                                        AnnotationType.BOOKMARK,
+                                                        derivedCurrentPosition,
+                                                        currentCharOffset,
+                                                        endOffset,
+                                                        wholePageContent,
+                                                        "",
+                                                        HighlightColor.YELLOW.name
+                                                    )
+                                                }
                                             }
                                         },
                                     contentAlignment = Alignment.Center
@@ -2048,8 +2099,17 @@ fun BookReaderScreen(
                                             }
                                         }
 
+                                        val displayAnnotationText = if (
+                                            book.layoutType == PublicationLayoutType.FIXED &&
+                                            item.type == AnnotationType.BOOKMARK
+                                        ) {
+                                            "Page ${item.pageNumber}"
+                                        } else {
+                                            item.text
+                                        }
+
                                         Text(
-                                            text = item.text,
+                                            text = displayAnnotationText,
                                             fontSize = 13.sp,
                                             color = palette.textSecondary,
                                             maxLines = 3,
@@ -2142,7 +2202,15 @@ fun BookReaderScreen(
                         onClick = {
                             val cleaned = noteInputText.trim()
                             if (cleaned.isNotEmpty()) {
-                                val (exactStart, exactEnd) = if (coveredPassageForNote.isNotBlank()) {
+                                val isFixedPdf = book.layoutType == PublicationLayoutType.FIXED
+                                val targetPageNumber = if (isFixedPdf) {
+                                    activePdfPageNumber
+                                } else {
+                                    derivedCurrentPosition
+                                }
+                                val (exactStart, exactEnd) = if (isFixedPdf) {
+                                    0 to 0
+                                } else if (coveredPassageForNote.isNotBlank()) {
                                     resolveSelectionRange(
                                         coveredPassageForNote.trim(),
                                         coveredStartOffsetForNote,
@@ -2153,7 +2221,7 @@ fun BookReaderScreen(
                                 }
                                 onAddAnnotation(
                                     AnnotationType.NOTE,
-                                    derivedCurrentPosition,
+                                    targetPageNumber,
                                     exactStart,
                                     exactEnd,
                                     cleaned,
@@ -2309,8 +2377,16 @@ fun BookReaderScreen(
                     )
                 },
                 text = {
+                    val previewText = if (
+                        book.layoutType == PublicationLayoutType.FIXED &&
+                        targetAnn.type == AnnotationType.BOOKMARK
+                    ) {
+                        "Page ${targetAnn.pageNumber}"
+                    } else {
+                        targetAnn.text
+                    }
                     Text(
-                        text = "Delete this $label from Page ${targetAnn.pageNumber}?\n\n\"${targetAnn.text}\"",
+                        text = "Delete this $label from Page ${targetAnn.pageNumber}?\n\n\"$previewText\"",
                         fontSize = 14.sp,
                         maxLines = 6,
                         overflow = TextOverflow.Ellipsis,

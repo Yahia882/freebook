@@ -263,6 +263,7 @@ data class Book(
      * parsing `charOffset` or `totalProgression` from `locatorJson` if needed.
      */
     fun resolveSavedCharOffset(totalChars: Int): Int {
+        if (layoutType == PublicationLayoutType.FIXED) return 0
         val safeTotal = totalChars.coerceAtLeast(1)
         if (readingCharOffset > 0) {
             return readingCharOffset.coerceIn(0, safeTotal - 1)

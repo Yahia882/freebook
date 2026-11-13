@@ -244,14 +244,35 @@ class BookFreeViewModel(
         showToast: Boolean = false
     ) {
         viewModelScope.launch {
+            val safePageNumber = pageNumber.coerceAtLeast(1)
+            val targetBook = uiState.value.books.firstOrNull { it.id == bookId }
+            val isFixedPdf = targetBook?.layoutType == com.example.freebook.model.PublicationLayoutType.FIXED
+
+            if (isFixedPdf && type == AnnotationType.BOOKMARK) {
+                val alreadyBookmarked = uiState.value.annotations.any { ann ->
+                    ann.bookId == bookId &&
+                        ann.type == AnnotationType.BOOKMARK &&
+                        ann.pageNumber == safePageNumber
+                }
+                if (alreadyBookmarked) return@launch
+            }
+
+            val resolvedCharOffset = if (isFixedPdf) 0 else charOffset
+            val resolvedEndCharOffset = if (isFixedPdf) 0 else endCharOffset
+            val resolvedText = if (isFixedPdf && type == AnnotationType.BOOKMARK) {
+                "Page $safePageNumber"
+            } else {
+                text
+            }
+
             bookRepository.addAnnotation(
                 bookId = bookId,
                 type = type,
-                pageNumber = pageNumber,
-                charOffset = charOffset,
-                endCharOffset = endCharOffset,
-                text = text,
-                quotedText = quotedText,
+                pageNumber = safePageNumber,
+                charOffset = resolvedCharOffset,
+                endCharOffset = resolvedEndCharOffset,
+                text = resolvedText,
+                quotedText = if (isFixedPdf && type == AnnotationType.BOOKMARK) "" else quotedText,
                 highlightColorName = highlightColorName
             )
             if (showToast) {

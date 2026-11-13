@@ -206,10 +206,15 @@ fun ReadiumPdfReaderHost(
 
         frag.currentLocator.collect { locator ->
             latestOnCurrentLocatorChanged(locator)
+            val fragmentPage = locator.locations.fragments.firstNotNullOfOrNull { fragmentToken ->
+                fragmentToken.removePrefix("page=")
+                    .takeIf { fragmentToken.startsWith("page=", ignoreCase = true) }
+                    ?.toIntOrNull()
+            }
             val pageNumber = (
                 locator.locations.position
-                    ?: locator.locations.totalProgression?.let { (it * totalPages).toInt() + 1 }
-                    ?: 1
+                    ?: fragmentPage
+                    ?: (book.currentPageIndex + 1)
                 ).coerceIn(1, totalPages)
             val progressPercent = if (totalPages > 1 && pageNumber >= totalPages) {
                 100f
