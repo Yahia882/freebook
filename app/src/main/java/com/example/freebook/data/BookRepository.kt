@@ -270,9 +270,10 @@ class OfflineFirstBookRepository(
             }
         }
 
-        val resolvedCharOffset = if (isFixedLayout) 0 else charOffset.coerceAtLeast(0)
-        val resolvedEndCharOffset = if (isFixedLayout) 0 else endCharOffset.coerceAtLeast(0)
-        val resolvedText = if (isFixedLayout && type == AnnotationType.BOOKMARK) {
+        val isFixedBookmark = isFixedLayout && type == AnnotationType.BOOKMARK
+        val resolvedCharOffset = if (isFixedBookmark) 0 else charOffset.coerceAtLeast(0)
+        val resolvedEndCharOffset = if (isFixedBookmark) 0 else endCharOffset.coerceAtLeast(0)
+        val resolvedText = if (isFixedBookmark) {
             "Page $safePageNumber"
         } else {
             text

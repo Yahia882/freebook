@@ -629,6 +629,7 @@ fun BookReaderScreen(
         if (book.layoutType == PublicationLayoutType.FIXED) {
             CustomPdfReader(
                 book = book,
+                bookAnnotations = bookAnnotations,
                 navigationMode = preferences.navigationMode,
                 readerTheme = activeReaderTheme,
                 isRtl = pdfIsRtl,
@@ -638,6 +639,9 @@ fun BookReaderScreen(
                 },
                 onPageChanged = { pageIndex, totalPages, progressPercent ->
                     val pageNumber = (pageIndex + 1).coerceIn(1, totalPages.coerceAtLeast(1))
+                    if (pageNumber != derivedCurrentPosition) {
+                        tappedHighlightId = null
+                    }
                     currentPdfPageIndex = pageIndex
                     derivedCurrentPosition = pageNumber
                     derivedTotalPositions = totalPages
@@ -654,7 +658,39 @@ fun BookReaderScreen(
                     )
                 },
                 onSingleTap = {
-                    isActiveReaderHudVisible = !isActiveReaderHudVisible
+                    if (tappedHighlightId != null) {
+                        tappedHighlightId = null
+                    } else {
+                        isActiveReaderHudVisible = !isActiveReaderHudVisible
+                    }
+                },
+                onHighlightSelection = { pageNumberOneBased, startCharOffset, endCharOffset, selectedText ->
+                    tappedHighlightId = null
+                    latestOnAddAnnotation(
+                        AnnotationType.HIGHLIGHT,
+                        pageNumberOneBased,
+                        startCharOffset,
+                        endCharOffset,
+                        selectedText,
+                        "",
+                        HighlightColor.YELLOW.name
+                    )
+                },
+                onAddNoteForSelection = { pageNumberOneBased, startCharOffset, endCharOffset, selectedText ->
+                    tappedHighlightId = null
+                    derivedCurrentPosition = pageNumberOneBased
+                    coveredPassageForNote = selectedText
+                    coveredStartOffsetForNote = startCharOffset
+                    coveredEndOffsetForNote = endCharOffset
+                    noteInputText = ""
+                    showAddNoteDialog = true
+                },
+                onCopySelection = { selectedText ->
+                    ReadiumWebViewNavigator.copyTextToSystemClipboard(context, selectedText)
+                },
+                onTapSavedHighlight = { annotation, anchorRect ->
+                    tappedHighlightId = annotation.id
+                    tappedHighlightRect = anchorRect
                 },
                 onBindNavigator = { jumper ->
                     pdfJumpToPage = jumper
@@ -2272,7 +2308,11 @@ fun BookReaderScreen(
                                     derivedCurrentPosition
                                 }
                                 val (exactStart, exactEnd) = if (isFixedPdf) {
-                                    0 to 0
+                                    if (coveredStartOffsetForNote >= 0 && coveredEndOffsetForNote >= coveredStartOffsetForNote) {
+                                        coveredStartOffsetForNote to coveredEndOffsetForNote
+                                    } else {
+                                        0 to 0
+                                    }
                                 } else if (coveredPassageForNote.isNotBlank()) {
                                     resolveSelectionRange(
                                         coveredPassageForNote.trim(),

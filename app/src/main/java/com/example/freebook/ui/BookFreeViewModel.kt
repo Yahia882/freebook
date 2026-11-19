@@ -257,9 +257,10 @@ class BookFreeViewModel(
                 if (alreadyBookmarked) return@launch
             }
 
-            val resolvedCharOffset = if (isFixedPdf) 0 else charOffset
-            val resolvedEndCharOffset = if (isFixedPdf) 0 else endCharOffset
-            val resolvedText = if (isFixedPdf && type == AnnotationType.BOOKMARK) {
+            val isFixedBookmark = isFixedPdf && type == AnnotationType.BOOKMARK
+            val resolvedCharOffset = if (isFixedBookmark) 0 else charOffset
+            val resolvedEndCharOffset = if (isFixedBookmark) 0 else endCharOffset
+            val resolvedText = if (isFixedBookmark) {
                 "Page $safePageNumber"
             } else {
                 text
