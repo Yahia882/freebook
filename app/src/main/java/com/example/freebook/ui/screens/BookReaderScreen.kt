@@ -96,6 +96,7 @@ import com.example.freebook.data.EpubParser
 import com.example.freebook.model.AnnotationType
 import com.example.freebook.model.Book
 import com.example.freebook.model.BookAnnotation
+import com.example.freebook.model.BookReadingDirection
 import com.example.freebook.model.FixedLayoutFitMode
 import com.example.freebook.model.HighlightColor
 import com.example.freebook.model.PublicationLayoutType
@@ -108,8 +109,9 @@ import com.example.freebook.ui.components.BookmarkRibbonIcon
 import com.example.freebook.ui.components.CloseCrossIcon
 import com.example.freebook.ui.components.NotePencilIcon
 import com.example.freebook.ui.components.SearchVectorIcon
+import com.example.freebook.ui.reader.CustomPdfReader
+import com.example.freebook.ui.reader.PdfTocEntry
 import com.example.freebook.ui.reader.ReadiumActionModeSession
-import com.example.freebook.ui.reader.ReadiumPdfReaderHost
 import com.example.freebook.ui.reader.ReadiumSelectionWebView
 import com.example.freebook.ui.reader.ReadiumTocEntry
 import com.example.freebook.ui.reader.ReadiumWebViewNavigator
@@ -200,9 +202,14 @@ fun BookReaderScreen(
     var isWebViewDocumentReady by remember(book.id) { mutableStateOf(false) }
     var isPdfDocumentReady by remember(book.id) { mutableStateOf(false) }
     var pdfJumpToPage by remember(book.id) { mutableStateOf<((Int) -> Unit)?>(null) }
-    var pdfTocEntries by remember(book.id) { mutableStateOf<List<ReadiumTocEntry>>(emptyList()) }
-    var pdfNavigateToTocEntry by remember(book.id) { mutableStateOf<((ReadiumTocEntry) -> Unit)?>(null) }
-    var pdfCurrentLocator by remember(book.id) { mutableStateOf<Locator?>(null) }
+    var pdfTocEntries by remember(book.id) { mutableStateOf<List<PdfTocEntry>>(emptyList()) }
+    var currentPdfPageIndex by rememberSaveable(book.id) {
+        mutableIntStateOf(book.currentPageIndex.coerceAtLeast(0))
+    }
+    var pdfIsRtl by rememberSaveable(book.id) {
+        mutableStateOf(book.readingDirection == BookReadingDirection.RTL)
+    }
+    var hasManualPdfRtlOverride by rememberSaveable(book.id) { mutableStateOf(false) }
     val isBookContentLoaded = if (book.layoutType == PublicationLayoutType.FIXED) {
         isPdfDocumentReady
     } else {
@@ -221,7 +228,6 @@ fun BookReaderScreen(
     }
     var currentVisibleText by remember { mutableStateOf("") }
     var isInitialPositionRestored by remember(book.id) { mutableStateOf(false) }
-    var currentPdfLocatorJson by rememberSaveable(book.id) { mutableStateOf(book.locatorJson) }
     var currentPdfProgressPercent by rememberSaveable(book.id) {
         mutableFloatStateOf(book.readingProgress.coerceIn(0.1f, 100f))
     }
@@ -309,21 +315,9 @@ fun BookReaderScreen(
         }
     }
 
-    val tableOfContentsEntries = if (book.layoutType == PublicationLayoutType.FIXED) {
-        pdfTocEntries
-    } else {
-        reflowableTocEntries
-    }
-
-    val activeCurrentLocator = if (book.layoutType == PublicationLayoutType.FIXED) {
-        pdfCurrentLocator
-    } else {
-        webViewCurrentLocator
-    }
-
     val currentProgressionFraction by remember(
         book.layoutType,
-        activeCurrentLocator,
+        webViewCurrentLocator,
         derivedCurrentPosition,
         derivedTotalPositions,
         readingPercent,
@@ -331,16 +325,20 @@ fun BookReaderScreen(
         isPdfDocumentReady
     ) {
         derivedStateOf {
-            val isReady = if (book.layoutType == PublicationLayoutType.FIXED) {
-                isPdfDocumentReady
+            if (book.layoutType == PublicationLayoutType.FIXED) {
+                val safeTotal = derivedTotalPositions.coerceAtLeast(1)
+                if (safeTotal <= 1 || derivedCurrentPosition >= safeTotal) {
+                    1f
+                } else {
+                    (derivedCurrentPosition.toFloat() / safeTotal.toFloat()).coerceIn(0f, 1f)
+                }
             } else {
-                isInitialPositionRestored
-            }
-            val locatorProg = activeCurrentLocator?.locations?.totalProgression?.toFloat()
-            when {
-                derivedTotalPositions > 1 && derivedCurrentPosition >= derivedTotalPositions -> 1f
-                isReady && locatorProg != null -> locatorProg.coerceIn(0f, 1f)
-                else -> (readingPercent / 100f).coerceIn(0f, 1f)
+                val locatorProg = webViewCurrentLocator.locations.totalProgression?.toFloat()
+                when {
+                    derivedTotalPositions > 1 && derivedCurrentPosition >= derivedTotalPositions -> 1f
+                    isInitialPositionRestored && locatorProg != null -> locatorProg.coerceIn(0f, 1f)
+                    else -> (readingPercent / 100f).coerceIn(0f, 1f)
+                }
             }
         }
     }
@@ -358,7 +356,7 @@ fun BookReaderScreen(
     val latestDerivedTotalPos by rememberUpdatedState(derivedTotalPositions)
     val latestIsRestored by rememberUpdatedState(isInitialPositionRestored)
     val latestIsPdfReady by rememberUpdatedState(isPdfDocumentReady)
-    val latestPdfLocatorJson by rememberUpdatedState(currentPdfLocatorJson)
+    val latestPdfPageIndex by rememberUpdatedState(currentPdfPageIndex)
     val latestPdfProgressPercent by rememberUpdatedState(currentPdfProgressPercent)
     val latestOnLocatorChanged by rememberUpdatedState(onLocatorChanged)
     val latestOnAddAnnotation by rememberUpdatedState(onAddAnnotation)
@@ -528,13 +526,13 @@ fun BookReaderScreen(
     // Flush current locator when exiting the reader or when the app goes to background
     fun flushCurrentLocator() {
         if (book.layoutType == PublicationLayoutType.FIXED) {
-            if (latestIsPdfReady && latestPdfLocatorJson.isNotBlank()) {
+            if (latestIsPdfReady) {
                 latestOnLocatorChanged(
                     0,
                     1,
-                    (latestDerivedPos - 1).coerceAtLeast(0),
-                    latestDerivedTotalPos,
-                    latestPdfLocatorJson,
+                    latestPdfPageIndex.coerceAtLeast(0),
+                    latestDerivedTotalPos.coerceAtLeast(1),
+                    null,
                     latestPdfProgressPercent
                 )
             }
@@ -582,19 +580,11 @@ fun BookReaderScreen(
     }
 
     val activePdfPageNumber by remember(
-        book.layoutType,
-        pdfCurrentLocator,
-        derivedCurrentPosition,
+        currentPdfPageIndex,
         derivedTotalPositions
     ) {
         derivedStateOf {
-            val fragmentPage = pdfCurrentLocator?.locations?.fragments?.firstNotNullOfOrNull { token ->
-                token.removePrefix("page=")
-                    .takeIf { token.startsWith("page=", ignoreCase = true) }
-                    ?.toIntOrNull()
-            }
-            (pdfCurrentLocator?.locations?.position ?: fragmentPage ?: derivedCurrentPosition)
-                .coerceIn(1, derivedTotalPositions.coerceAtLeast(1))
+            (currentPdfPageIndex + 1).coerceIn(1, derivedTotalPositions.coerceAtLeast(1))
         }
     }
 
@@ -634,29 +624,32 @@ fun BookReaderScreen(
         contentAlignment = Alignment.Center
     ) {
         // =========================================================================
-        // READIUM READER HOST (Fixed-Layout PDF via PdfNavigatorFragment vs Reflowable EPUB via WebView)
+        // READER HOST (Fixed-Layout PDF via CustomPdfReader vs Reflowable EPUB via Readium WebView)
         // =========================================================================
         if (book.layoutType == PublicationLayoutType.FIXED) {
-            ReadiumPdfReaderHost(
+            CustomPdfReader(
                 book = book,
                 navigationMode = preferences.navigationMode,
+                readerTheme = activeReaderTheme,
+                isRtl = pdfIsRtl,
                 onDocumentReady = { totalPages ->
                     derivedTotalPositions = totalPages
                     isPdfDocumentReady = true
                 },
-                onLocatorChanged = { locatorJson, pageNumber, totalPages, progressPercent ->
+                onPageChanged = { pageIndex, totalPages, progressPercent ->
+                    val pageNumber = (pageIndex + 1).coerceIn(1, totalPages.coerceAtLeast(1))
+                    currentPdfPageIndex = pageIndex
                     derivedCurrentPosition = pageNumber
                     derivedTotalPositions = totalPages
-                    currentPdfLocatorJson = locatorJson
                     currentPdfProgressPercent = progressPercent
                     currentCharOffset = 0
                     currentVisibleText = "Page $pageNumber"
                     latestOnLocatorChanged(
                         0,
                         1,
-                        (pageNumber - 1).coerceAtLeast(0),
-                        totalPages,
-                        locatorJson,
+                        pageIndex.coerceAtLeast(0),
+                        totalPages.coerceAtLeast(1),
+                        null,
                         progressPercent
                     )
                 },
@@ -669,15 +662,12 @@ fun BookReaderScreen(
                 onTableOfContentsLoaded = { entries ->
                     pdfTocEntries = entries
                 },
-                onCurrentLocatorChanged = { locator ->
-                    pdfCurrentLocator = locator
+                onAutoDetectRtl = { detectedRtl ->
+                    if (!hasManualPdfRtlOverride) {
+                        pdfIsRtl = detectedRtl
+                    }
                 },
-                onBindTocNavigator = { nav ->
-                    pdfNavigateToTocEntry = nav
-                },
-                modifier = Modifier
-                    .widthIn(max = 820.dp)
-                    .fillMaxSize()
+                modifier = Modifier.fillMaxSize()
             )
         } else if (canonicalBookText.isNotEmpty()) {
             val initialHtml = remember(book.id, canonicalBookText) {
@@ -1229,95 +1219,28 @@ fun BookReaderScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    // 1. LEFT BUTTON: "Theme" (EPUB) OR "Swipe / Scroll" Toggle (PDF)
-                                    if (book.layoutType == PublicationLayoutType.REFLOWABLE) {
-                                        Box(
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .height(36.dp)
-                                                .clip(CircleShape)
-                                                .background(Color.Transparent)
-                                                .border(1.dp, palette.borderSubtle, CircleShape)
-                                                .clickable {
-                                                    showThemesBottomSheet = true
-                                                }
-                                                .padding(horizontal = 14.dp),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text(
-                                                text = "Theme",
-                                                fontSize = 13.sp,
-                                                fontWeight = FontWeight.Medium,
-                                                color = palette.textPrimary,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-                                    } else {
-                                        val isScrollMode =
-                                            preferences.navigationMode == ReaderNavigationMode.VERTICAL_SCROLL
-                                        Row(
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .height(36.dp)
-                                                .clip(CircleShape)
-                                                .background(Color.Transparent)
-                                                .border(1.dp, palette.borderSubtle, CircleShape)
-                                                .clickable {
-                                                    val nextMode = if (isScrollMode) {
-                                                        ReaderNavigationMode.HORIZONTAL_SWIPE
-                                                    } else {
-                                                        ReaderNavigationMode.VERTICAL_SCROLL
-                                                    }
-                                                    onSelectNavigationMode(nextMode)
-                                                }
-                                                .padding(3.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                        ) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .weight(1f)
-                                                    .fillMaxSize()
-                                                    .clip(CircleShape)
-                                                    .background(Color.Transparent)
-                                                    .then(
-                                                        if (!isScrollMode) Modifier.border(1.dp, palette.borderSubtle, CircleShape)
-                                                        else Modifier
-                                                    ),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Text(
-                                                    text = "Swipe",
-                                                    fontSize = 13.sp,
-                                                    fontWeight = FontWeight.Medium,
-                                                    color = if (!isScrollMode) palette.textPrimary
-                                                    else palette.textMuted,
-                                                    maxLines = 1
-                                                )
+                                    // 1. LEFT BUTTON: "Theme" (opens Themes & Navigation sheet for both EPUB and PDF)
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(36.dp)
+                                            .clip(CircleShape)
+                                            .background(Color.Transparent)
+                                            .border(1.dp, palette.borderSubtle, CircleShape)
+                                            .clickable {
+                                                showThemesBottomSheet = true
                                             }
-                                            Box(
-                                                modifier = Modifier
-                                                    .weight(1f)
-                                                    .fillMaxSize()
-                                                    .clip(CircleShape)
-                                                    .background(Color.Transparent)
-                                                    .then(
-                                                        if (isScrollMode) Modifier.border(1.dp, palette.borderSubtle, CircleShape)
-                                                        else Modifier
-                                                    ),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Text(
-                                                    text = "Scroll",
-                                                    fontSize = 13.sp,
-                                                    fontWeight = FontWeight.Medium,
-                                                    color = if (isScrollMode) palette.textPrimary
-                                                    else palette.textMuted,
-                                                    maxLines = 1
-                                                )
-                                            }
-                                        }
+                                            .padding(horizontal = 14.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = "Theme",
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = palette.textPrimary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
                                     }
 
                                     // 2. RIGHT BUTTON: "Notebook" (Bookmarks, Highlights, and Notes)
@@ -1399,33 +1322,35 @@ fun BookReaderScreen(
         }
 
         // =========================================================================
-        // MODAL BOTTOM SHEET: "Table of Contents" (Readium publication.tableOfContents)
+        // MODAL BOTTOM SHEET: "Table of Contents" (PDF outline or Readium EPUB TOC)
         // =========================================================================
         if (showTocBottomSheet) {
             val tocSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+            val isFixedLayout = book.layoutType == PublicationLayoutType.FIXED
             val activeTocEntryId = remember(
-                tableOfContentsEntries,
-                book.layoutType,
+                isFixedLayout,
+                pdfTocEntries,
+                reflowableTocEntries,
                 currentCharOffset,
-                currentProgressionFraction,
-                activeCurrentLocator
+                currentPdfPageIndex
             ) {
-                if (tableOfContentsEntries.isEmpty()) {
-                    null
-                } else if (book.layoutType == PublicationLayoutType.REFLOWABLE) {
-                    tableOfContentsEntries.lastOrNull { entry ->
-                        val offset = (entry.locator?.locations?.otherLocations?.get("charOffset") as? Number)?.toInt()
-                        offset != null && offset <= currentCharOffset + 12
-                    }?.id ?: tableOfContentsEntries.first().id
+                if (isFixedLayout) {
+                    if (pdfTocEntries.isEmpty()) {
+                        null
+                    } else {
+                        pdfTocEntries.lastOrNull { entry ->
+                            entry.pageIndex <= currentPdfPageIndex
+                        }?.id ?: pdfTocEntries.first().id
+                    }
                 } else {
-                    tableOfContentsEntries.lastOrNull { entry ->
-                        val entryProg = entry.locator?.locations?.totalProgression?.toFloat()
-                        if (entryProg != null) {
-                            entryProg <= currentProgressionFraction + 0.005f
-                        } else {
-                            entry.locator?.href == activeCurrentLocator?.href
-                        }
-                    }?.id
+                    if (reflowableTocEntries.isEmpty()) {
+                        null
+                    } else {
+                        reflowableTocEntries.lastOrNull { entry ->
+                            val offset = (entry.locator?.locations?.otherLocations?.get("charOffset") as? Number)?.toInt()
+                            offset != null && offset <= currentCharOffset + 12
+                        }?.id ?: reflowableTocEntries.first().id
+                    }
                 }
             }
 
@@ -1458,7 +1383,8 @@ fun BookReaderScreen(
                         )
                     }
 
-                    if (tableOfContentsEntries.isEmpty()) {
+                    val hasTocEntries = if (isFixedLayout) pdfTocEntries.isNotEmpty() else reflowableTocEntries.isNotEmpty()
+                    if (!hasTocEntries) {
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1472,6 +1398,71 @@ fun BookReaderScreen(
                                 textAlign = TextAlign.Center
                             )
                         }
+                    } else if (isFixedLayout) {
+                        val safeTotalPages = derivedTotalPositions.coerceAtLeast(1)
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 420.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            items(
+                                items = pdfTocEntries,
+                                key = { it.id },
+                                contentType = { "pdf_toc_entry" }
+                            ) { entry ->
+                                val isCurrentChapter = entry.id == activeTocEntryId
+                                val indentDp = (entry.depth.coerceIn(0, 4) * 14).dp
+                                val entryPercent = (((entry.pageIndex + 1).toFloat() / safeTotalPages.toFloat()) * 100f)
+                                    .roundToInt()
+                                    .coerceIn(0, 100)
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(start = indentDp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(
+                                            if (isCurrentChapter) {
+                                                if (palette.isDark) Color.White.copy(alpha = 0.08f)
+                                                else Color.Black.copy(alpha = 0.05f)
+                                            } else {
+                                                Color.Transparent
+                                            }
+                                        )
+                                        .border(
+                                            width = 1.dp,
+                                            color = if (isCurrentChapter) palette.borderSubtle else Color.Transparent,
+                                            shape = RoundedCornerShape(12.dp)
+                                        )
+                                        .clickable {
+                                            pdfJumpToPage?.invoke(entry.pageIndex + 1)
+                                            showTocBottomSheet = false
+                                        }
+                                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = entry.title,
+                                        fontSize = if (entry.depth == 0) 14.sp else 13.sp,
+                                        fontWeight = if (isCurrentChapter) FontWeight.SemiBold else FontWeight.Normal,
+                                        color = if (isCurrentChapter) palette.textPrimary else palette.textSecondary,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text(
+                                        text = "p.${entry.pageIndex + 1} · ${entryPercent}%",
+                                        fontSize = 11.5.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = palette.textMuted
+                                    )
+                                }
+                            }
+                        }
                     } else {
                         LazyColumn(
                             modifier = Modifier
@@ -1480,7 +1471,7 @@ fun BookReaderScreen(
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             items(
-                                items = tableOfContentsEntries,
+                                items = reflowableTocEntries,
                                 key = { it.id },
                                 contentType = { "toc_chapter_entry" }
                             ) { entry ->
@@ -1506,19 +1497,15 @@ fun BookReaderScreen(
                                             shape = RoundedCornerShape(12.dp)
                                         )
                                         .clickable {
-                                            if (book.layoutType == PublicationLayoutType.FIXED) {
-                                                pdfNavigateToTocEntry?.invoke(entry)
-                                            } else {
-                                                val targetLoc = entry.locator
-                                                if (targetLoc != null) {
-                                                    val offset = (targetLoc.locations.otherLocations["charOffset"] as? Number)?.toInt()
-                                                    if (offset != null) {
-                                                        currentCharOffset = offset
-                                                    }
-                                                    readiumNavigator.go(targetLoc, animated = false)
-                                                } else {
-                                                    readiumNavigator.go(entry.link, animated = false)
+                                            val targetLoc = entry.locator
+                                            if (targetLoc != null) {
+                                                val offset = (targetLoc.locations.otherLocations["charOffset"] as? Number)?.toInt()
+                                                if (offset != null) {
+                                                    currentCharOffset = offset
                                                 }
+                                                readiumNavigator.go(targetLoc, animated = false)
+                                            } else {
+                                                readiumNavigator.go(entry.link, animated = false)
                                             }
                                             showTocBottomSheet = false
                                         }
@@ -1557,10 +1544,11 @@ fun BookReaderScreen(
         }
 
         // =========================================================================
-        // MODAL BOTTOM SHEET: "Themes & Typography" (Reflowable EPUBs only)
+        // MODAL BOTTOM SHEET: "Themes & Typography" (EPUB) / "Reading Theme" (PDF)
         // =========================================================================
-        if (showThemesBottomSheet && book.layoutType == PublicationLayoutType.REFLOWABLE) {
+        if (showThemesBottomSheet) {
             val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+            val isPdfSheet = book.layoutType == PublicationLayoutType.FIXED
             ModalBottomSheet(
                 onDismissRequest = { showThemesBottomSheet = false },
                 sheetState = sheetState,
@@ -1575,7 +1563,7 @@ fun BookReaderScreen(
                     verticalArrangement = Arrangement.spacedBy(18.dp)
                 ) {
                     Text(
-                        text = "Themes & Typography",
+                        text = if (isPdfSheet) "Reading Theme" else "Themes & Typography",
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
                         color = palette.textPrimary
@@ -1920,10 +1908,10 @@ fun BookReaderScreen(
                             }
                         }
                     } else {
-                        // Fixed-Layout Fit Modes
+                        // PDF-only options: Navigation Mode (Swipe / Scroll) & Manual RTL Swipe Direction
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text(
-                                text = "FIXED-LAYOUT FIT MODE (PINCH TO ZOOM ENABLED)",
+                                text = "NAVIGATION MODE",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 letterSpacing = 0.8.sp,
@@ -1933,23 +1921,98 @@ fun BookReaderScreen(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                FixedLayoutFitMode.entries.forEach { mode ->
-                                    val sel = preferences.fixedLayoutFitMode == mode
+                                ReaderNavigationMode.entries.forEach { navMode ->
+                                    val isSelected = preferences.navigationMode == navMode
                                     Box(
                                         modifier = Modifier
                                             .weight(1f)
-                                            .clip(RoundedCornerShape(10.dp))
-                                            .background(if (sel) palette.dockTabActiveBg else palette.surfaceColor)
-                                            .border(1.dp, palette.borderSubtle, RoundedCornerShape(10.dp))
-                                            .clickable { onSelectFixedLayoutFitMode(mode) }
-                                            .padding(vertical = 10.dp),
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(
+                                                if (isSelected) palette.dockTabActiveBg
+                                                else palette.surfaceColor
+                                            )
+                                            .border(
+                                                width = 1.dp,
+                                                color = if (isSelected) palette.dockTabActiveBg
+                                                else palette.borderSubtle,
+                                                shape = RoundedCornerShape(12.dp)
+                                            )
+                                            .clickable { onSelectNavigationMode(navMode) }
+                                            .padding(vertical = 11.dp, horizontal = 8.dp),
                                         contentAlignment = Alignment.Center
                                     ) {
                                         Text(
-                                            text = mode.label,
+                                            text = navMode.label,
                                             fontSize = 12.sp,
                                             fontWeight = FontWeight.SemiBold,
-                                            color = if (sel) palette.dockTabActiveText else palette.textPrimary
+                                            color = if (isSelected) palette.dockTabActiveText
+                                            else palette.textPrimary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "SWIPE DIRECTION",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    letterSpacing = 0.8.sp,
+                                    color = palette.textMuted
+                                )
+                                Text(
+                                    text = if (hasManualPdfRtlOverride) "Manual" else "Auto-detected",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = palette.textMuted
+                                )
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                listOf(
+                                    false to "Left to Right (LTR)",
+                                    true to "Right to Left (RTL)"
+                                ).forEach { (rtlOption, label) ->
+                                    val isSelected = pdfIsRtl == rtlOption
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(
+                                                if (isSelected) palette.dockTabActiveBg
+                                                else palette.surfaceColor
+                                            )
+                                            .border(
+                                                width = 1.dp,
+                                                color = if (isSelected) palette.dockTabActiveBg
+                                                else palette.borderSubtle,
+                                                shape = RoundedCornerShape(12.dp)
+                                            )
+                                            .clickable {
+                                                hasManualPdfRtlOverride = true
+                                                pdfIsRtl = rtlOption
+                                            }
+                                            .padding(vertical = 11.dp, horizontal = 8.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = label,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = if (isSelected) palette.dockTabActiveText
+                                            else palette.textPrimary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                     }
                                 }

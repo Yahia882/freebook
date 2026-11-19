@@ -14,6 +14,7 @@ import android.view.ViewTreeObserver
 import android.view.inspector.WindowInspector
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.view.WindowCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -59,6 +60,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -427,13 +429,27 @@ fun BookFreeApp(
 
     FreebookTheme(darkTheme = isDarkTheme) {
         val palette = LocalBookFreePalette.current
+        val isReaderActive = currentScreen is ScreenDestination.BookReader
+        val activeReaderTheme = uiState.preferences.readerTheme
+        val useLightSystemBarIcons = if (isReaderActive) {
+            activeReaderTheme.isDarkSurface
+        } else {
+            isDarkTheme
+        }
+        val hostView = LocalView.current
+        LaunchedEffect(hostView, useLightSystemBarIcons) {
+            val activity = hostView.context as? FragmentActivity ?: return@LaunchedEffect
+            val controller = WindowCompat.getInsetsController(activity.window, hostView)
+            controller.isAppearanceLightStatusBars = !useLightSystemBarIcons
+            controller.isAppearanceLightNavigationBars = !useLightSystemBarIcons
+        }
 
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
-                    if (currentScreen is ScreenDestination.BookReader) {
-                        palette.readerBackground
+                    if (isReaderActive) {
+                        androidx.compose.ui.graphics.Color(activeReaderTheme.backgroundArgb)
                     } else {
                         palette.appBackground
                     }
