@@ -482,6 +482,17 @@ fun MoreVertDotsIcon(color: Color, size: Dp = 20.dp) {
 }
 
 @Composable
+fun MoreHorizDotsIcon(color: Color, size: Dp = 20.dp) {
+    Canvas(modifier = Modifier.size(size)) {
+        val r = 1.6.dp.toPx()
+        val cy = this.size.height / 2f
+        drawCircle(color = color, radius = r, center = Offset(this.size.width * 0.22f, cy))
+        drawCircle(color = color, radius = r, center = Offset(this.size.width * 0.50f, cy))
+        drawCircle(color = color, radius = r, center = Offset(this.size.width * 0.78f, cy))
+    }
+}
+
+@Composable
 fun BookOpenIcon(color: Color, size: Dp = 20.dp) {
     Canvas(modifier = Modifier.size(size)) {
         val stroke = 1.8.dp.toPx()

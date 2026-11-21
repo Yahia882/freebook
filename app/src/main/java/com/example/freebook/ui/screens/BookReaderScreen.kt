@@ -10,12 +10,17 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
@@ -79,16 +84,27 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -107,6 +123,7 @@ import com.example.freebook.model.ReaderTextAlign
 import com.example.freebook.model.ReaderTheme
 import com.example.freebook.ui.components.BookmarkRibbonIcon
 import com.example.freebook.ui.components.CloseCrossIcon
+import com.example.freebook.ui.components.MoreHorizDotsIcon
 import com.example.freebook.ui.components.NotePencilIcon
 import com.example.freebook.ui.components.SearchVectorIcon
 import com.example.freebook.ui.reader.CustomPdfReader
@@ -183,13 +200,17 @@ fun BookReaderScreen(
 
     var isActiveReaderHudVisible by rememberSaveable { mutableStateOf(false) }
     var isBottomBarExpanded by rememberSaveable { mutableStateOf(false) }
+    var showOverflowMenu by rememberSaveable { mutableStateOf(false) }
     var showThemesBottomSheet by rememberSaveable { mutableStateOf(false) }
     var showTocBottomSheet by rememberSaveable { mutableStateOf(false) }
     var activeHighlightColor by rememberSaveable { mutableStateOf(HighlightColor.YELLOW) }
 
-    LaunchedEffect(isActiveReaderHudVisible) {
+    LaunchedEffect(isActiveReaderHudVisible, isBottomBarExpanded) {
         if (!isActiveReaderHudVisible) {
             isBottomBarExpanded = false
+            showOverflowMenu = false
+        } else if (!isBottomBarExpanded) {
+            showOverflowMenu = false
         }
     }
 
@@ -1123,14 +1144,15 @@ fun BookReaderScreen(
 
                         Spacer(modifier = Modifier.height(6.dp))
 
-                        // Primary Row: Add Note, Percentage, Bookmark Toggle, Search
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                        // Primary Row: Add Note, Page Progress ("X of Y" with "of" locked to center), Bookmark Toggle, Search
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(36.dp)
                         ) {
                             Box(
                                 modifier = Modifier
+                                    .align(Alignment.CenterStart)
                                     .height(36.dp)
                                     .clip(CircleShape)
                                     .background(Color.Transparent)
@@ -1153,14 +1175,46 @@ fun BookReaderScreen(
                                 )
                             }
 
-                            Text(
-                                text = String.format(Locale.US, "%.1f%%", readingPercent),
-                                fontSize = 13.5.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = palette.textMuted
-                            )
+                            val safeTotalPages = derivedTotalPositions.coerceAtLeast(1)
+                            val safeCurrentPage = derivedCurrentPosition.coerceIn(1, safeTotalPages)
+                            Row(
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 88.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "$safeCurrentPage",
+                                    fontSize = 13.5.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = palette.textMuted,
+                                    style = TextStyle(fontFeatureSettings = "tnum"),
+                                    textAlign = TextAlign.End,
+                                    maxLines = 1,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text(
+                                    text = " of ",
+                                    fontSize = 13.5.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = palette.textMuted,
+                                    maxLines = 1
+                                )
+                                Text(
+                                    text = "$safeTotalPages",
+                                    fontSize = 13.5.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = palette.textMuted,
+                                    style = TextStyle(fontFeatureSettings = "tnum"),
+                                    textAlign = TextAlign.Start,
+                                    maxLines = 1,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
 
                             Row(
+                                modifier = Modifier.align(Alignment.CenterEnd),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
@@ -1234,89 +1288,51 @@ fun BookReaderScreen(
                             }
                         }
 
-                        // Extended Options: Side-by-side Row
-                        // - EPUB: Left = "Theme", Right = "Notebook"
-                        // - PDF:  Left = Scroll / Swipe toggle button, Right = "Notebook"
+                        // Row 2 (Expanded): Flexible "Contents · {progress}%" pill + Fixed-Width Overflow (•••) pill
                         AnimatedVisibility(
                             visible = isBottomBarExpanded,
                             enter = expandVertically() + fadeIn(),
                             exit = shrinkVertically() + fadeOut()
                         ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(top = 12.dp, bottom = 2.dp),
-                                verticalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                HorizontalDivider(color = palette.borderSubtle, thickness = 1.dp)
-
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    // 1. LEFT BUTTON: "Theme" (opens Themes & Navigation sheet for both EPUB and PDF)
-                                    Box(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .height(36.dp)
-                                            .clip(CircleShape)
-                                            .background(Color.Transparent)
-                                            .border(1.dp, palette.borderSubtle, CircleShape)
-                                            .clickable {
-                                                showThemesBottomSheet = true
-                                            }
-                                            .padding(horizontal = 14.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text(
-                                            text = "Theme",
-                                            fontSize = 13.sp,
-                                            fontWeight = FontWeight.Medium,
-                                            color = palette.textPrimary,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-
-                                    // 2. RIGHT BUTTON: "Notebook" (Bookmarks, Highlights, and Notes)
-                                    Row(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .height(36.dp)
-                                            .clip(CircleShape)
-                                            .background(Color.Transparent)
-                                            .border(1.dp, palette.borderSubtle, CircleShape)
-                                            .clickable {
-                                                showBookmarksAndHighlightsDialog = true
-                                            }
-                                            .padding(horizontal = 14.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
-                                    ) {
-                                        Text(
-                                            text = "Notebook",
-                                            fontSize = 13.sp,
-                                            fontWeight = FontWeight.Medium,
-                                            color = palette.textPrimary,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-
-                                        Text(
-                                            text = "${allBookAnnotationsSorted.size}",
-                                            fontSize = 13.sp,
-                                            fontWeight = FontWeight.Medium,
-                                            color = palette.textMuted,
-                                            maxLines = 1
-                                        )
+                            val density = LocalDensity.current
+                            val overflowMenuTransitionState = remember { MutableTransitionState(false) }
+                            LaunchedEffect(showOverflowMenu) {
+                                overflowMenuTransitionState.targetState = showOverflowMenu
+                            }
+                            val popoverPositionProvider = remember(density) {
+                                object : PopupPositionProvider {
+                                    override fun calculatePosition(
+                                        anchorBounds: IntRect,
+                                        windowSize: IntSize,
+                                        layoutDirection: LayoutDirection,
+                                        popupContentSize: IntSize
+                                    ): IntOffset {
+                                        val horizontalShadowPadPx = with(density) { 12.dp.roundToPx() }
+                                        val edgeMarginPx = with(density) { 8.dp.roundToPx() }
+                                        val x = (anchorBounds.right - popupContentSize.width + horizontalShadowPadPx)
+                                            .coerceIn(
+                                                edgeMarginPx,
+                                                (windowSize.width - popupContentSize.width - edgeMarginPx)
+                                                    .coerceAtLeast(edgeMarginPx)
+                                            )
+                                        val y = (anchorBounds.top - popupContentSize.height)
+                                            .coerceAtLeast(edgeMarginPx)
+                                        return IntOffset(x, y)
                                     }
                                 }
+                            }
 
-                                // 3. FULL-WIDTH BOTTOM BUTTON: "Contents · {progress}%" with live progress fill
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 10.dp, bottom = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                // Left (Flexible): "Contents · {progress}%" with live progress fill
                                 Box(
                                     modifier = Modifier
-                                        .fillMaxWidth()
+                                        .weight(1f)
                                         .height(36.dp)
                                         .clip(CircleShape)
                                         .background(Color.Transparent)
@@ -1349,6 +1365,211 @@ fun BookReaderScreen(
                                             .align(Alignment.Center)
                                             .padding(horizontal = 14.dp)
                                     )
+                                }
+
+                                // Right (Fixed-width): Overflow / More pill button (•••) with anchored floating popover
+                                Box {
+                                    Box(
+                                        modifier = Modifier
+                                            .width(60.dp)
+                                            .height(36.dp)
+                                            .clip(CircleShape)
+                                            .background(
+                                                if (showOverflowMenu) {
+                                                    if (palette.isDark) Color.White.copy(alpha = 0.12f)
+                                                    else Color.Black.copy(alpha = 0.08f)
+                                                } else {
+                                                    Color.Transparent
+                                                }
+                                            )
+                                            .border(1.dp, palette.borderSubtle, CircleShape)
+                                            .clickable { showOverflowMenu = !showOverflowMenu },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        MoreHorizDotsIcon(
+                                            color = palette.textPrimary,
+                                            size = 18.dp
+                                        )
+                                    }
+
+                                    if (overflowMenuTransitionState.currentState || overflowMenuTransitionState.targetState) {
+                                        Popup(
+                                            popupPositionProvider = popoverPositionProvider,
+                                            onDismissRequest = { showOverflowMenu = false },
+                                            properties = PopupProperties(focusable = showOverflowMenu)
+                                        ) {
+                                            val slideOffsetPx = with(density) { 12.dp.roundToPx() }
+                                            val popoverTransformOrigin = TransformOrigin(0.85f, 1f)
+
+                                            androidx.compose.animation.AnimatedVisibility(
+                                                visibleState = overflowMenuTransitionState,
+                                                enter = if (preferences.enablePageAnimations) {
+                                                    fadeIn(
+                                                        animationSpec = tween(
+                                                            durationMillis = 180,
+                                                            easing = FastOutSlowInEasing
+                                                        )
+                                                    ) + scaleIn(
+                                                        initialScale = 0.92f,
+                                                        transformOrigin = popoverTransformOrigin,
+                                                        animationSpec = tween(
+                                                            durationMillis = 180,
+                                                            easing = FastOutSlowInEasing
+                                                        )
+                                                    ) + slideInVertically(
+                                                        initialOffsetY = { slideOffsetPx },
+                                                        animationSpec = tween(
+                                                            durationMillis = 180,
+                                                            easing = FastOutSlowInEasing
+                                                        )
+                                                    )
+                                                } else {
+                                                    EnterTransition.None
+                                                },
+                                                exit = if (preferences.enablePageAnimations) {
+                                                    fadeOut(
+                                                        animationSpec = tween(
+                                                            durationMillis = 140,
+                                                            easing = FastOutLinearInEasing
+                                                        )
+                                                    ) + scaleOut(
+                                                        targetScale = 0.92f,
+                                                        transformOrigin = popoverTransformOrigin,
+                                                        animationSpec = tween(
+                                                            durationMillis = 140,
+                                                            easing = FastOutLinearInEasing
+                                                        )
+                                                    ) + slideOutVertically(
+                                                        targetOffsetY = { slideOffsetPx },
+                                                        animationSpec = tween(
+                                                            durationMillis = 140,
+                                                            easing = FastOutLinearInEasing
+                                                        )
+                                                    )
+                                                } else {
+                                                    ExitTransition.None
+                                                }
+                                            ) {
+                                                val popoverShape = RoundedCornerShape(20.dp)
+                                                Box(
+                                                    modifier = Modifier.padding(
+                                                        start = 12.dp,
+                                                        end = 12.dp,
+                                                        top = 8.dp,
+                                                        bottom = 12.dp
+                                                    )
+                                                ) {
+                                                    Surface(
+                                                        modifier = Modifier
+                                                            .width(228.dp)
+                                                            .shadow(
+                                                                elevation = if (palette.isDark) 24.dp else 8.dp,
+                                                                shape = popoverShape,
+                                                                ambientColor = Color.Black.copy(alpha = if (palette.isDark) 0.6f else 0.12f),
+                                                                spotColor = Color.Black.copy(alpha = if (palette.isDark) 0.7f else 0.16f)
+                                                            )
+                                                            .border(1.dp, palette.dockBorder, popoverShape),
+                                                        shape = popoverShape,
+                                                        color = palette.glassBackground
+                                                    ) {
+                                                        Column(
+                                                            modifier = Modifier.padding(vertical = 6.dp)
+                                                        ) {
+                                                            // Menu Item 1: Themes & Settings
+                                                            Row(
+                                                                modifier = Modifier
+                                                                    .fillMaxWidth()
+                                                                    .clickable {
+                                                                        showOverflowMenu = false
+                                                                        showThemesBottomSheet = true
+                                                                    }
+                                                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                                            ) {
+                                                                Box(
+                                                                    modifier = Modifier.size(24.dp),
+                                                                    contentAlignment = Alignment.Center
+                                                                ) {
+                                                                    Text(
+                                                                        text = "Aa",
+                                                                        fontFamily = FontFamily.Serif,
+                                                                        fontWeight = FontWeight.SemiBold,
+                                                                        fontSize = 15.sp,
+                                                                        lineHeight = 15.sp,
+                                                                        color = palette.textPrimary,
+                                                                        style = TextStyle(
+                                                                            platformStyle = PlatformTextStyle(
+                                                                                includeFontPadding = false
+                                                                            )
+                                                                        ),
+                                                                        modifier = Modifier.offset(y = (-1).dp)
+                                                                    )
+                                                                }
+
+                                                                Text(
+                                                                    text = "Theme",
+                                                                    fontSize = 14.sp,
+                                                                    fontWeight = FontWeight.Medium,
+                                                                    color = palette.textPrimary,
+                                                                    maxLines = 1,
+                                                                    overflow = TextOverflow.Ellipsis
+                                                                )
+                                                            }
+
+                                                            HorizontalDivider(
+                                                                color = palette.borderSubtle,
+                                                                thickness = 1.dp,
+                                                                modifier = Modifier.padding(horizontal = 12.dp)
+                                                            )
+
+                                                            // Menu Item 2: Notebook + plain trailing count
+                                                            Row(
+                                                                modifier = Modifier
+                                                                    .fillMaxWidth()
+                                                                    .clickable {
+                                                                        showOverflowMenu = false
+                                                                        showBookmarksAndHighlightsDialog = true
+                                                                    }
+                                                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                                            ) {
+                                                                Box(
+                                                                    modifier = Modifier.size(24.dp),
+                                                                    contentAlignment = Alignment.Center
+                                                                ) {
+                                                                    NotePencilIcon(
+                                                                        color = palette.textPrimary,
+                                                                        size = 18.dp
+                                                                    )
+                                                                }
+
+                                                                Text(
+                                                                    text = "Notebook",
+                                                                    fontSize = 14.sp,
+                                                                    fontWeight = FontWeight.Medium,
+                                                                    color = palette.textPrimary,
+                                                                    maxLines = 1,
+                                                                    overflow = TextOverflow.Ellipsis,
+                                                                    modifier = Modifier.weight(1f)
+                                                                )
+
+                                                                Text(
+                                                                    text = "${allBookAnnotationsSorted.size}",
+                                                                    fontSize = 13.sp,
+                                                                    fontWeight = FontWeight.Medium,
+                                                                    color = palette.textMuted,
+                                                                    style = TextStyle(fontFeatureSettings = "tnum"),
+                                                                    maxLines = 1
+                                                                )
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
