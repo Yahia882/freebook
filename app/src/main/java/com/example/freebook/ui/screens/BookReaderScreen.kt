@@ -83,6 +83,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.input.pointer.pointerInput
@@ -1103,25 +1104,59 @@ fun BookReaderScreen(
                         )
                     }
             ) {
-                val barCornerShape = RoundedCornerShape(if (isBottomBarExpanded) 28.dp else 30.dp)
+                val barCornerShape = RoundedCornerShape(24.dp)
+                val dockSurfaceColor = if (palette.isDark) {
+                    Color(0xFF1C1C1E).copy(alpha = 0.92f)
+                } else {
+                    Color(0xFFF4F4F6).copy(alpha = 0.90f)
+                }
+                val dockBorderColor = if (palette.isDark) {
+                    Color.White.copy(alpha = 0.08f)
+                } else {
+                    Color.Black.copy(alpha = 0.08f)
+                }
+                val dockSheenBrush = Brush.verticalGradient(
+                    colors = if (palette.isDark) {
+                        listOf(
+                            Color.White.copy(alpha = 0.05f),
+                            Color.Transparent
+                        )
+                    } else {
+                        listOf(
+                            Color.White.copy(alpha = 0.35f),
+                            Color.Transparent
+                        )
+                    }
+                )
+                val dockButtonFill = if (palette.isDark) {
+                    Color.White.copy(alpha = 0.07f)
+                } else {
+                    Color.Black.copy(alpha = 0.05f)
+                }
+                val dockButtonBorder = if (palette.isDark) {
+                    Color.White.copy(alpha = 0.10f)
+                } else {
+                    Color.Black.copy(alpha = 0.10f)
+                }
 
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth(0.92f)
                         .shadow(
-                            elevation = if (palette.isDark) 24.dp else 8.dp,
+                            elevation = if (palette.isDark) 24.dp else 10.dp,
                             shape = barCornerShape,
-                            ambientColor = Color.Black.copy(alpha = if (palette.isDark) 0.6f else 0.12f),
-                            spotColor = Color.Black.copy(alpha = if (palette.isDark) 0.7f else 0.16f)
+                            ambientColor = Color.Black.copy(alpha = if (palette.isDark) 0.65f else 0.12f),
+                            spotColor = Color.Black.copy(alpha = if (palette.isDark) 0.75f else 0.16f)
                         )
-                        .border(1.dp, palette.dockBorder, barCornerShape)
+                        .border(1.dp, dockBorderColor, barCornerShape)
                         .animateContentSize(),
                     shape = barCornerShape,
-                    color = palette.glassBackground
+                    color = dockSurfaceColor
                 ) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .background(dockSheenBrush)
                             .padding(horizontal = 16.dp, vertical = 10.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
@@ -1155,8 +1190,8 @@ fun BookReaderScreen(
                                     .align(Alignment.CenterStart)
                                     .height(36.dp)
                                     .clip(CircleShape)
-                                    .background(Color.Transparent)
-                                    .border(1.dp, palette.borderSubtle, CircleShape)
+                                    .background(dockButtonFill)
+                                    .border(1.dp, dockButtonBorder, CircleShape)
                                     .clickable {
                                         coveredPassageForNote = ""
                                         coveredStartOffsetForNote = -1
@@ -1223,8 +1258,8 @@ fun BookReaderScreen(
                                     modifier = Modifier
                                         .size(36.dp)
                                         .clip(CircleShape)
-                                        .background(Color.Transparent)
-                                        .border(1.dp, palette.borderSubtle, CircleShape)
+                                        .background(dockButtonFill)
+                                        .border(1.dp, dockButtonBorder, CircleShape)
                                         .clickable {
                                             if (book.layoutType == PublicationLayoutType.FIXED) {
                                                 val matchingPdfBookmarks = bookAnnotations.filter { ann ->
@@ -1278,8 +1313,8 @@ fun BookReaderScreen(
                                     modifier = Modifier
                                         .size(36.dp)
                                         .clip(CircleShape)
-                                        .background(Color.Transparent)
-                                        .border(1.dp, palette.borderSubtle, CircleShape)
+                                        .background(dockButtonFill)
+                                        .border(1.dp, dockButtonBorder, CircleShape)
                                         .clickable { showSearchInBookDialog = true },
                                     contentAlignment = Alignment.Center
                                 ) {
@@ -1335,8 +1370,8 @@ fun BookReaderScreen(
                                         .weight(1f)
                                         .height(36.dp)
                                         .clip(CircleShape)
-                                        .background(Color.Transparent)
-                                        .border(1.dp, palette.borderSubtle, CircleShape)
+                                        .background(dockButtonFill)
+                                        .border(1.dp, dockButtonBorder, CircleShape)
                                         .clickable {
                                             showTocBottomSheet = true
                                         }
@@ -1348,8 +1383,8 @@ fun BookReaderScreen(
                                                 .fillMaxHeight()
                                                 .fillMaxWidth(animatedProgressFill.coerceIn(0f, 1f))
                                                 .background(
-                                                    if (palette.isDark) Color.White.copy(alpha = 0.12f)
-                                                    else Color.Black.copy(alpha = 0.08f)
+                                                    if (palette.isDark) Color.White.copy(alpha = 0.14f)
+                                                    else Color.Black.copy(alpha = 0.09f)
                                                 )
                                         )
                                     }
@@ -1376,13 +1411,13 @@ fun BookReaderScreen(
                                             .clip(CircleShape)
                                             .background(
                                                 if (showOverflowMenu) {
-                                                    if (palette.isDark) Color.White.copy(alpha = 0.12f)
-                                                    else Color.Black.copy(alpha = 0.08f)
+                                                    if (palette.isDark) Color.White.copy(alpha = 0.15f)
+                                                    else Color.Black.copy(alpha = 0.10f)
                                                 } else {
-                                                    Color.Transparent
+                                                    dockButtonFill
                                                 }
                                             )
-                                            .border(1.dp, palette.borderSubtle, CircleShape)
+                                            .border(1.dp, dockButtonBorder, CircleShape)
                                             .clickable { showOverflowMenu = !showOverflowMenu },
                                         contentAlignment = Alignment.Center
                                     ) {
@@ -1463,17 +1498,19 @@ fun BookReaderScreen(
                                                         modifier = Modifier
                                                             .width(228.dp)
                                                             .shadow(
-                                                                elevation = if (palette.isDark) 24.dp else 8.dp,
+                                                                elevation = if (palette.isDark) 24.dp else 10.dp,
                                                                 shape = popoverShape,
-                                                                ambientColor = Color.Black.copy(alpha = if (palette.isDark) 0.6f else 0.12f),
-                                                                spotColor = Color.Black.copy(alpha = if (palette.isDark) 0.7f else 0.16f)
+                                                                ambientColor = Color.Black.copy(alpha = if (palette.isDark) 0.65f else 0.12f),
+                                                                spotColor = Color.Black.copy(alpha = if (palette.isDark) 0.75f else 0.16f)
                                                             )
-                                                            .border(1.dp, palette.dockBorder, popoverShape),
+                                                            .border(1.dp, dockBorderColor, popoverShape),
                                                         shape = popoverShape,
-                                                        color = palette.glassBackground
+                                                        color = dockSurfaceColor
                                                     ) {
                                                         Column(
-                                                            modifier = Modifier.padding(vertical = 6.dp)
+                                                            modifier = Modifier
+                                                                .background(dockSheenBrush)
+                                                                .padding(vertical = 6.dp)
                                                         ) {
                                                             // Menu Item 1: Themes & Settings
                                                             Row(
