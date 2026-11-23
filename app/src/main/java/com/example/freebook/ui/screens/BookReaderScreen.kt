@@ -7,6 +7,7 @@ import android.view.ViewGroup
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.animateContentSize
@@ -48,6 +49,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
@@ -122,11 +125,17 @@ import com.example.freebook.model.ReaderNavigationMode
 import com.example.freebook.model.ReaderPreferences
 import com.example.freebook.model.ReaderTextAlign
 import com.example.freebook.model.ReaderTheme
+import com.example.freebook.ui.components.AudioWaveformIcon
 import com.example.freebook.ui.components.BookmarkRibbonIcon
+import com.example.freebook.ui.components.ChapterListIcon
 import com.example.freebook.ui.components.CloseCrossIcon
 import com.example.freebook.ui.components.MoreHorizDotsIcon
 import com.example.freebook.ui.components.NotePencilIcon
+import com.example.freebook.ui.components.PauseBarsIcon
 import com.example.freebook.ui.components.SearchVectorIcon
+import com.example.freebook.ui.components.SkipSecondsIcon
+import com.example.freebook.ui.components.SleepTimerIcon
+import com.example.freebook.ui.components.SwapHorizArrowsIcon
 import com.example.freebook.ui.reader.CustomPdfReader
 import com.example.freebook.ui.reader.PdfTocEntry
 import com.example.freebook.ui.reader.ReadiumActionModeSession
@@ -142,6 +151,11 @@ import org.readium.r2.shared.ExperimentalReadiumApi
 import org.readium.r2.shared.publication.Locator
 import java.util.Locale
 import kotlin.math.roundToInt
+
+private enum class AudioDockMode {
+    TTS,
+    AUDIOBOOK
+}
 
 private fun normalizeCanonicalText(raw: String): String =
     raw.replace("\r\n", "\n")
@@ -201,7 +215,10 @@ fun BookReaderScreen(
 
     var isActiveReaderHudVisible by rememberSaveable { mutableStateOf(false) }
     var isBottomBarExpanded by rememberSaveable { mutableStateOf(false) }
+    var isAudioDockExpanded by rememberSaveable { mutableStateOf(false) }
     var showOverflowMenu by rememberSaveable { mutableStateOf(false) }
+    var audioDockMode by rememberSaveable { mutableStateOf(AudioDockMode.TTS) }
+    val dockPagerState = rememberPagerState(initialPage = 0, pageCount = { 2 })
     var showThemesBottomSheet by rememberSaveable { mutableStateOf(false) }
     var showTocBottomSheet by rememberSaveable { mutableStateOf(false) }
     var activeHighlightColor by rememberSaveable { mutableStateOf(HighlightColor.YELLOW) }
@@ -209,8 +226,15 @@ fun BookReaderScreen(
     LaunchedEffect(isActiveReaderHudVisible, isBottomBarExpanded) {
         if (!isActiveReaderHudVisible) {
             isBottomBarExpanded = false
+            isAudioDockExpanded = false
             showOverflowMenu = false
         } else if (!isBottomBarExpanded) {
+            showOverflowMenu = false
+        }
+    }
+
+    LaunchedEffect(dockPagerState.currentPage, dockPagerState.isScrollInProgress) {
+        if (dockPagerState.currentPage != 0 || dockPagerState.isScrollInProgress) {
             showOverflowMenu = false
         }
     }
@@ -1071,7 +1095,7 @@ fun BookReaderScreen(
         }
 
         // =========================================================================
-        // EXTENDABLE BOTTOM FLOATING BAR (SWIPE UP TO EXTEND VERTICALLY)
+        // SWIPEABLE BOTTOM FLOATING DOCKS (PAGE 0: READING DOCK, PAGE 1: AUDIO/TTS DOCK)
         // =========================================================================
         AnimatedVisibility(
             visible = isBookContentLoaded && isActiveReaderHudVisible,
@@ -1086,23 +1110,7 @@ fun BookReaderScreen(
                 modifier = Modifier
                     .widthIn(max = 560.dp)
                     .fillMaxWidth()
-                    .padding(bottom = 20.dp)
-                    .pointerInput(isBottomBarExpanded) {
-                        detectVerticalDragGestures(
-                            onDragStart = { cumulativeDragY = 0f },
-                            onVerticalDrag = { change, dragAmount ->
-                                change.consume()
-                                cumulativeDragY += dragAmount
-                                if (cumulativeDragY < -24f && !isBottomBarExpanded) {
-                                    isBottomBarExpanded = true
-                                    cumulativeDragY = 0f
-                                } else if (cumulativeDragY > 24f && isBottomBarExpanded) {
-                                    isBottomBarExpanded = false
-                                    cumulativeDragY = 0f
-                                }
-                            }
-                        )
-                    }
+                    .padding(bottom = 14.dp)
             ) {
                 val barCornerShape = RoundedCornerShape(24.dp)
                 val dockSurfaceColor = if (palette.isDark) {
@@ -1139,14 +1147,41 @@ fun BookReaderScreen(
                     Color.Black.copy(alpha = 0.10f)
                 }
 
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth(0.92f)
-                        .shadow(
-                            elevation = if (palette.isDark) 24.dp else 10.dp,
-                            shape = barCornerShape,
-                            ambientColor = Color.Black.copy(alpha = if (palette.isDark) 0.65f else 0.12f),
-                            spotColor = Color.Black.copy(alpha = if (palette.isDark) 0.75f else 0.16f)
+                HorizontalPager(
+                    state = dockPagerState,
+                    verticalAlignment = Alignment.Bottom,
+                    modifier = Modifier.fillMaxWidth()
+                ) { dockPage ->
+                    if (dockPage == 0) {
+                        Box(
+                            contentAlignment = Alignment.BottomCenter,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .pointerInput(isBottomBarExpanded) {
+                                    detectVerticalDragGestures(
+                                        onDragStart = { cumulativeDragY = 0f },
+                                        onVerticalDrag = { change, dragAmount ->
+                                            change.consume()
+                                            cumulativeDragY += dragAmount
+                                            if (cumulativeDragY < -24f && !isBottomBarExpanded) {
+                                                isBottomBarExpanded = true
+                                                cumulativeDragY = 0f
+                                            } else if (cumulativeDragY > 24f && isBottomBarExpanded) {
+                                                isBottomBarExpanded = false
+                                                cumulativeDragY = 0f
+                                            }
+                                        }
+                                    )
+                                }
+                        ) {
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth(0.92f)
+                                    .shadow(
+                                        elevation = if (palette.isDark) 24.dp else 10.dp,
+                                        shape = barCornerShape,
+                                        ambientColor = Color.Black.copy(alpha = if (palette.isDark) 0.65f else 0.12f),
+                                        spotColor = Color.Black.copy(alpha = if (palette.isDark) 0.75f else 0.16f)
                         )
                         .border(1.dp, dockBorderColor, barCornerShape)
                         .animateContentSize(),
@@ -1610,6 +1645,687 @@ fun BookReaderScreen(
                                 }
                             }
                         }
+                    }
+                }
+                        }
+                    } else {
+                        // =========================================================
+                        // PAGE 1: COLLAPSIBLE AUDIO / TTS PLAYBACK DOCK
+                        // =========================================================
+                        var cumulativeAudioDragY by remember { mutableFloatStateOf(0f) }
+                        val optionCardShape = RoundedCornerShape(14.dp)
+                        val togglePillFill = if (palette.isDark) {
+                            Color.White.copy(alpha = 0.14f)
+                        } else {
+                            Color.Black.copy(alpha = 0.09f)
+                        }
+
+                        Box(
+                            contentAlignment = Alignment.BottomCenter,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .pointerInput(isAudioDockExpanded) {
+                                    detectVerticalDragGestures(
+                                        onDragStart = { cumulativeAudioDragY = 0f },
+                                        onVerticalDrag = { change, dragAmount ->
+                                            change.consume()
+                                            cumulativeAudioDragY += dragAmount
+                                            if (cumulativeAudioDragY < -24f && !isAudioDockExpanded) {
+                                                isAudioDockExpanded = true
+                                                cumulativeAudioDragY = 0f
+                                            } else if (cumulativeAudioDragY > 24f && isAudioDockExpanded) {
+                                                isAudioDockExpanded = false
+                                                cumulativeAudioDragY = 0f
+                                            }
+                                        }
+                                    )
+                                }
+                        ) {
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth(0.92f)
+                                    .shadow(
+                                        elevation = if (palette.isDark) 24.dp else 10.dp,
+                                        shape = barCornerShape,
+                                        ambientColor = Color.Black.copy(alpha = if (palette.isDark) 0.65f else 0.12f),
+                                        spotColor = Color.Black.copy(alpha = if (palette.isDark) 0.75f else 0.16f)
+                                    )
+                                    .border(1.dp, dockBorderColor, barCornerShape)
+                                    .animateContentSize(),
+                                shape = barCornerShape,
+                                color = dockSurfaceColor
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(dockSheenBrush)
+                                        .padding(
+                                            horizontal = if (isAudioDockExpanded) 18.dp else 16.dp,
+                                            vertical = 10.dp
+                                        ),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    // Swipe Handle Pill (tap or swipe up/down to expand/collapse)
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { isAudioDockExpanded = !isAudioDockExpanded }
+                                            .padding(vertical = 4.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .width(36.dp)
+                                                .height(4.dp)
+                                                .clip(CircleShape)
+                                                .background(palette.textMuted.copy(alpha = 0.6f))
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.height(6.dp))
+
+                                    if (!isAudioDockExpanded) {
+                                        // -------------------------------------------------
+                                        // COLLAPSED COMPACT AUDIO / TTS MINI-BAR
+                                        // -------------------------------------------------
+                                        Crossfade(
+                                            targetState = audioDockMode,
+                                            animationSpec = if (preferences.enablePageAnimations) tween(180) else snap(),
+                                            label = "collapsed_audio_dock_mode"
+                                        ) { mode ->
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(36.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                // Pause / Play
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(34.dp)
+                                                        .clip(CircleShape)
+                                                        .clickable { /* Future play/pause implementation */ },
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    PauseBarsIcon(
+                                                        color = palette.textPrimary,
+                                                        size = 22.dp
+                                                    )
+                                                }
+
+                                                if (mode == AudioDockMode.TTS) {
+                                                    // TTS Collapsed: [||]  [1.0x]  [Timer]  [TTS]  [Voice]  [⇄]
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .height(32.dp)
+                                                            .clip(CircleShape)
+                                                            .clickable { /* Future speed implementation */ }
+                                                            .padding(horizontal = 6.dp),
+                                                        contentAlignment = Alignment.Center
+                                                    ) {
+                                                        Text(
+                                                            text = "1.0x",
+                                                            fontSize = 14.sp,
+                                                            fontWeight = FontWeight.Medium,
+                                                            color = palette.textSecondary,
+                                                            style = TextStyle(fontFeatureSettings = "tnum"),
+                                                            maxLines = 1
+                                                        )
+                                                    }
+
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(32.dp)
+                                                            .clip(CircleShape)
+                                                            .clickable { /* Future sleep timer implementation */ },
+                                                        contentAlignment = Alignment.Center
+                                                    ) {
+                                                        SleepTimerIcon(
+                                                            color = palette.textSecondary,
+                                                            size = 20.dp
+                                                        )
+                                                    }
+
+                                                    Text(
+                                                        text = "TTS",
+                                                        fontSize = 14.sp,
+                                                        fontWeight = FontWeight.Medium,
+                                                        color = palette.textSecondary,
+                                                        maxLines = 1
+                                                    )
+
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .height(32.dp)
+                                                            .clip(CircleShape)
+                                                            .clickable { /* Future TTS voice selector */ }
+                                                            .padding(horizontal = 6.dp),
+                                                        contentAlignment = Alignment.Center
+                                                    ) {
+                                                        Text(
+                                                            text = "Voice",
+                                                            fontSize = 14.sp,
+                                                            fontWeight = FontWeight.Medium,
+                                                            color = palette.textSecondary,
+                                                            maxLines = 1
+                                                        )
+                                                    }
+                                                } else {
+                                                    // Audiobook Collapsed: [||]  [Clip]  [1.0x]  [Timer]  [Book]  [⇄]
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .height(32.dp)
+                                                            .clip(CircleShape)
+                                                            .clickable { /* Future audiobook clip action */ }
+                                                            .padding(horizontal = 6.dp),
+                                                        contentAlignment = Alignment.Center
+                                                    ) {
+                                                        Text(
+                                                            text = "Clip",
+                                                            fontSize = 14.sp,
+                                                            fontWeight = FontWeight.Medium,
+                                                            color = palette.textSecondary,
+                                                            maxLines = 1
+                                                        )
+                                                    }
+
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .height(32.dp)
+                                                            .clip(CircleShape)
+                                                            .clickable { /* Future speed implementation */ }
+                                                            .padding(horizontal = 6.dp),
+                                                        contentAlignment = Alignment.Center
+                                                    ) {
+                                                        Text(
+                                                            text = "1.0x",
+                                                            fontSize = 14.sp,
+                                                            fontWeight = FontWeight.Medium,
+                                                            color = palette.textSecondary,
+                                                            style = TextStyle(fontFeatureSettings = "tnum"),
+                                                            maxLines = 1
+                                                        )
+                                                    }
+
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(32.dp)
+                                                            .clip(CircleShape)
+                                                            .clickable { /* Future sleep timer implementation */ },
+                                                        contentAlignment = Alignment.Center
+                                                    ) {
+                                                        SleepTimerIcon(
+                                                            color = palette.textSecondary,
+                                                            size = 20.dp
+                                                        )
+                                                    }
+
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .height(32.dp)
+                                                            .clip(CircleShape)
+                                                            .clickable { /* Future audiobook chapter selector */ }
+                                                            .padding(horizontal = 6.dp),
+                                                        contentAlignment = Alignment.Center
+                                                    ) {
+                                                        Text(
+                                                            text = "Book",
+                                                            fontSize = 14.sp,
+                                                            fontWeight = FontWeight.Medium,
+                                                            color = palette.textSecondary,
+                                                            maxLines = 1
+                                                        )
+                                                    }
+                                                }
+
+                                                // Compact Mode Toggle Pill (⇄)
+                                                Box(
+                                                    modifier = Modifier
+                                                        .width(50.dp)
+                                                        .height(34.dp)
+                                                        .clip(CircleShape)
+                                                        .background(togglePillFill)
+                                                        .border(1.dp, dockButtonBorder, CircleShape)
+                                                        .clickable {
+                                                            audioDockMode = if (audioDockMode == AudioDockMode.TTS) {
+                                                                AudioDockMode.AUDIOBOOK
+                                                            } else {
+                                                                AudioDockMode.TTS
+                                                            }
+                                                        },
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    SwapHorizArrowsIcon(
+                                                        color = palette.textPrimary,
+                                                        size = 16.dp
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        // -------------------------------------------------
+                                        // EXPANDED FULL AUDIO / TTS DOCK
+                                        // -------------------------------------------------
+                                        // Mode Header ("TTS" or "Audiobook")
+                                        Crossfade(
+                                            targetState = audioDockMode,
+                                            animationSpec = if (preferences.enablePageAnimations) tween(180) else snap(),
+                                            label = "audio_dock_mode_title"
+                                        ) { mode ->
+                                            Text(
+                                                text = if (mode == AudioDockMode.TTS) "TTS" else "Audiobook",
+                                                fontSize = 13.5.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                color = palette.textMuted,
+                                                textAlign = TextAlign.Center,
+                                                modifier = Modifier.fillMaxWidth()
+                                            )
+                                        }
+
+                                        Spacer(modifier = Modifier.height(10.dp))
+
+                                        // Progress Scrubber Track + Thumb
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(14.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(4.dp)
+                                                    .clip(CircleShape)
+                                                    .background(
+                                                        if (palette.isDark) Color.White.copy(alpha = 0.22f)
+                                                        else Color.Black.copy(alpha = 0.16f)
+                                                    )
+                                            )
+
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .weight(0.28f)
+                                                        .height(4.dp)
+                                                        .clip(CircleShape)
+                                                        .background(palette.textPrimary)
+                                                )
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(13.dp)
+                                                        .shadow(2.dp, CircleShape)
+                                                        .clip(CircleShape)
+                                                        .background(palette.textPrimary)
+                                                )
+                                                Spacer(modifier = Modifier.weight(0.72f))
+                                            }
+                                        }
+
+                                        Spacer(modifier = Modifier.height(4.dp))
+
+                                        // Timestamps
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = "2:00",
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Normal,
+                                                color = palette.textMuted,
+                                                style = TextStyle(fontFeatureSettings = "tnum")
+                                            )
+                                            Text(
+                                                text = "01:14:38",
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Normal,
+                                                color = palette.textMuted,
+                                                style = TextStyle(fontFeatureSettings = "tnum")
+                                            )
+                                        }
+
+                                        Spacer(modifier = Modifier.height(10.dp))
+
+                                        // Transport Controls Row: [Timer]  [↺15]  [Pause/Play]  [↻15]  [1.0x]
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            // Far-left slot (44.dp): Sleep Timer (shared across TTS and Audiobook)
+                                            Box(
+                                                modifier = Modifier.size(width = 44.dp, height = 38.dp),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(38.dp)
+                                                        .clip(CircleShape)
+                                                        .clickable { /* Future sleep timer implementation */ },
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    SleepTimerIcon(
+                                                        color = palette.textPrimary,
+                                                        size = 21.dp
+                                                    )
+                                                }
+                                            }
+
+                                            // Rewind 15s
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(40.dp)
+                                                    .clip(CircleShape)
+                                                    .clickable { /* Future -15s implementation */ },
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                SkipSecondsIcon(
+                                                    seconds = 15,
+                                                    forward = false,
+                                                    color = palette.textPrimary,
+                                                    size = 27.dp
+                                                )
+                                            }
+
+                                            // Start / Pause
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(44.dp)
+                                                    .clip(CircleShape)
+                                                    .clickable { /* Future play/pause implementation */ },
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                PauseBarsIcon(
+                                                    color = palette.textPrimary,
+                                                    size = 30.dp
+                                                )
+                                            }
+
+                                            // Forward 15s
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(40.dp)
+                                                    .clip(CircleShape)
+                                                    .clickable { /* Future +15s implementation */ },
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                SkipSecondsIcon(
+                                                    seconds = 15,
+                                                    forward = true,
+                                                    color = palette.textPrimary,
+                                                    size = 27.dp
+                                                )
+                                            }
+
+                                            // Playback Speed (1.0x)
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(width = 44.dp, height = 38.dp)
+                                                    .clip(CircleShape)
+                                                    .clickable { /* Future playback speed implementation */ },
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    text = "1.0x",
+                                                    fontSize = 14.5.sp,
+                                                    fontWeight = FontWeight.Medium,
+                                                    color = palette.textPrimary,
+                                                    style = TextStyle(fontFeatureSettings = "tnum"),
+                                                    maxLines = 1
+                                                )
+                                            }
+                                        }
+
+                                        Spacer(modifier = Modifier.height(10.dp))
+
+                                        HorizontalDivider(
+                                            color = dockBorderColor,
+                                            thickness = 1.dp
+                                        )
+
+                                        Spacer(modifier = Modifier.height(10.dp))
+
+                                        // Bottom Row: Mode-Specific Buttons (Left, filling full space) + Mode Toggle Pill (Right)
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Crossfade(
+                                                targetState = audioDockMode,
+                                                animationSpec = if (preferences.enablePageAnimations) tween(180) else snap(),
+                                                modifier = Modifier.weight(1f),
+                                                label = "audio_dock_bottom_options"
+                                            ) { mode ->
+                                                if (mode == AudioDockMode.TTS) {
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                    ) {
+                                                        // Model (Kokoro) — expands cleanly to fill half of remaining space
+                                                        Column(
+                                                            modifier = Modifier
+                                                                .weight(1f)
+                                                                .height(44.dp)
+                                                                .clip(optionCardShape)
+                                                                .background(dockButtonFill)
+                                                                .border(1.dp, dockButtonBorder, optionCardShape)
+                                                                .clickable { /* Future TTS model selector */ }
+                                                                .padding(horizontal = 10.dp),
+                                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                                            verticalArrangement = Arrangement.Center
+                                                        ) {
+                                                            Text(
+                                                                text = "Model",
+                                                                fontSize = 13.sp,
+                                                                lineHeight = 15.sp,
+                                                                fontWeight = FontWeight.Medium,
+                                                                color = palette.textPrimary,
+                                                                maxLines = 1,
+                                                                overflow = TextOverflow.Ellipsis
+                                                            )
+                                                            Text(
+                                                                text = "(Kokoro)",
+                                                                fontSize = 11.5.sp,
+                                                                lineHeight = 14.sp,
+                                                                color = palette.textMuted,
+                                                                maxLines = 1,
+                                                                overflow = TextOverflow.Ellipsis
+                                                            )
+                                                        }
+
+                                                        // Voice (Aria) — expands cleanly to fill half of remaining space
+                                                        Column(
+                                                            modifier = Modifier
+                                                                .weight(1f)
+                                                                .height(44.dp)
+                                                                .clip(optionCardShape)
+                                                                .background(dockButtonFill)
+                                                                .border(1.dp, dockButtonBorder, optionCardShape)
+                                                                .clickable { /* Future TTS voice selector */ }
+                                                                .padding(horizontal = 10.dp),
+                                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                                            verticalArrangement = Arrangement.Center
+                                                        ) {
+                                                            Text(
+                                                                text = "Voice",
+                                                                fontSize = 13.sp,
+                                                                lineHeight = 15.sp,
+                                                                fontWeight = FontWeight.Medium,
+                                                                color = palette.textPrimary,
+                                                                maxLines = 1,
+                                                                overflow = TextOverflow.Ellipsis
+                                                            )
+                                                            Text(
+                                                                text = "(Aria)",
+                                                                fontSize = 11.5.sp,
+                                                                lineHeight = 14.sp,
+                                                                color = palette.textMuted,
+                                                                maxLines = 1,
+                                                                overflow = TextOverflow.Ellipsis
+                                                            )
+                                                        }
+                                                    }
+                                                } else {
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                    ) {
+                                                        // Book Chapter selector (expands to fill remaining space cleanly)
+                                                        Row(
+                                                            modifier = Modifier
+                                                                .weight(1f)
+                                                                .height(44.dp)
+                                                                .clip(optionCardShape)
+                                                                .background(dockButtonFill)
+                                                                .border(1.dp, dockButtonBorder, optionCardShape)
+                                                                .clickable { /* Future audiobook chapter selector */ }
+                                                                .padding(start = 12.dp, end = 10.dp),
+                                                            verticalAlignment = Alignment.CenterVertically,
+                                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                        ) {
+                                                            Column(
+                                                                modifier = Modifier.weight(1f),
+                                                                horizontalAlignment = Alignment.Start,
+                                                                verticalArrangement = Arrangement.Center
+                                                            ) {
+                                                                Text(
+                                                                    text = "Book (Chapter 12)",
+                                                                    fontSize = 12.5.sp,
+                                                                    lineHeight = 15.sp,
+                                                                    fontWeight = FontWeight.Medium,
+                                                                    color = palette.textPrimary,
+                                                                    maxLines = 1,
+                                                                    overflow = TextOverflow.Ellipsis
+                                                                )
+                                                                Text(
+                                                                    text = "(Chapter 12)",
+                                                                    fontSize = 11.sp,
+                                                                    lineHeight = 14.sp,
+                                                                    color = palette.textMuted,
+                                                                    maxLines = 1,
+                                                                    overflow = TextOverflow.Ellipsis
+                                                                )
+                                                            }
+
+                                                            Box(
+                                                                modifier = Modifier
+                                                                    .width(1.dp)
+                                                                    .height(22.dp)
+                                                                    .background(dockButtonBorder)
+                                                            )
+
+                                                            ChapterListIcon(
+                                                                color = palette.textPrimary,
+                                                                size = 16.dp
+                                                            )
+                                                        }
+
+                                                        // Clip button (compact pill matching 44.dp row height)
+                                                        Row(
+                                                            modifier = Modifier
+                                                                .height(44.dp)
+                                                                .clip(optionCardShape)
+                                                                .background(dockButtonFill)
+                                                                .border(1.dp, dockButtonBorder, optionCardShape)
+                                                                .clickable { /* Future audiobook clip action */ }
+                                                                .padding(horizontal = 12.dp),
+                                                            verticalAlignment = Alignment.CenterVertically,
+                                                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                                        ) {
+                                                            AudioWaveformIcon(
+                                                                color = palette.textPrimary,
+                                                                size = 14.dp
+                                                            )
+                                                            Text(
+                                                                text = "Clip",
+                                                                fontSize = 13.sp,
+                                                                fontWeight = FontWeight.Medium,
+                                                                color = palette.textPrimary,
+                                                                maxLines = 1
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // Mode Toggle Pill: matches 44.dp row height ("⇄ Audio" / "⇄ TTS")
+                                            Row(
+                                                modifier = Modifier
+                                                    .height(44.dp)
+                                                    .clip(CircleShape)
+                                                    .background(togglePillFill)
+                                                    .border(1.dp, dockButtonBorder, CircleShape)
+                                                    .clickable {
+                                                        audioDockMode = if (audioDockMode == AudioDockMode.TTS) {
+                                                            AudioDockMode.AUDIOBOOK
+                                                        } else {
+                                                            AudioDockMode.TTS
+                                                        }
+                                                    }
+                                                    .padding(horizontal = 14.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                SwapHorizArrowsIcon(
+                                                    color = palette.textPrimary,
+                                                    size = 14.dp
+                                                )
+                                                Text(
+                                                    text = if (audioDockMode == AudioDockMode.TTS) "Audio" else "TTS",
+                                                    fontSize = 13.sp,
+                                                    fontWeight = FontWeight.Medium,
+                                                    color = palette.textPrimary,
+                                                    maxLines = 1
+                                                )
+                                            }
+                                        }
+
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Swipe Page Indicator Dots (Page 0 = Reading Dock, Page 1 = Audio/TTS Dock)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    repeat(2) { pageIndex ->
+                        val isSelectedPage = dockPagerState.currentPage == pageIndex
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (isSelectedPage) palette.textPrimary
+                                    else palette.textMuted.copy(alpha = 0.45f)
+                                )
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) {
+                                    coroutineScope.launch {
+                                        if (preferences.enablePageAnimations) {
+                                            dockPagerState.animateScrollToPage(pageIndex)
+                                        } else {
+                                            dockPagerState.scrollToPage(pageIndex)
+                                        }
+                                    }
+                                }
+                        )
                     }
                 }
             }

@@ -42,7 +42,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
@@ -51,6 +53,8 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -618,6 +622,263 @@ fun BookmarkRibbonIcon(color: Color, filled: Boolean = false, size: Dp = 20.dp) 
                 path = path,
                 color = color,
                 style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round)
+            )
+        }
+    }
+}
+
+@Composable
+fun SleepTimerIcon(color: Color, size: Dp = 22.dp) {
+    Canvas(modifier = Modifier.size(size)) {
+        val stroke = 1.8.dp.toPx()
+        val w = this.size.width
+        val h = this.size.height
+        val cx = w * 0.5f
+        val cy = h * 0.55f
+        val r = this.size.minDimension * 0.36f
+
+        // Top stopwatch crown
+        drawLine(
+            color = color,
+            start = Offset(w * 0.38f, h * 0.11f),
+            end = Offset(w * 0.62f, h * 0.11f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round
+        )
+        drawLine(
+            color = color,
+            start = Offset(cx, h * 0.11f),
+            end = Offset(cx, cy - r),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round
+        )
+        // Side button tick
+        drawLine(
+            color = color,
+            start = Offset(cx + r * 0.68f, cy - r * 0.68f),
+            end = Offset(cx + r * 0.88f, cy - r * 0.88f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round
+        )
+        // Dial circle
+        drawCircle(
+            color = color,
+            radius = r,
+            center = Offset(cx, cy),
+            style = Stroke(width = stroke)
+        )
+        // Clock hands
+        val hands = Path().apply {
+            moveTo(cx, cy - r * 0.52f)
+            lineTo(cx, cy)
+            lineTo(cx + r * 0.42f, cy + r * 0.24f)
+        }
+        drawPath(
+            path = hands,
+            color = color,
+            style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
+    }
+}
+
+@Composable
+fun SkipSecondsIcon(
+    seconds: Int = 15,
+    forward: Boolean,
+    color: Color,
+    size: Dp = 30.dp
+) {
+    Box(
+        modifier = Modifier.size(size),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val stroke = 2.dp.toPx()
+            val w = this.size.width
+            val h = this.size.height
+            val pad = w * 0.12f
+            val arcTop = h * 0.16f
+            val arcSize = Size(w - pad * 2f, h - pad - arcTop)
+            val cx = w * 0.5f
+
+            if (forward) {
+                drawArc(
+                    color = color,
+                    startAngle = -42f,
+                    sweepAngle = 312f,
+                    useCenter = false,
+                    topLeft = Offset(pad, arcTop),
+                    size = arcSize,
+                    style = Stroke(width = stroke, cap = StrokeCap.Round)
+                )
+                val arrow = Path().apply {
+                    moveTo(cx - w * 0.08f, arcTop - h * 0.09f)
+                    lineTo(cx + w * 0.07f, arcTop)
+                    lineTo(cx - w * 0.08f, arcTop + h * 0.09f)
+                }
+                drawPath(
+                    path = arrow,
+                    color = color,
+                    style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                )
+            } else {
+                drawArc(
+                    color = color,
+                    startAngle = -138f,
+                    sweepAngle = -312f,
+                    useCenter = false,
+                    topLeft = Offset(pad, arcTop),
+                    size = arcSize,
+                    style = Stroke(width = stroke, cap = StrokeCap.Round)
+                )
+                val arrow = Path().apply {
+                    moveTo(cx + w * 0.08f, arcTop - h * 0.09f)
+                    lineTo(cx - w * 0.07f, arcTop)
+                    lineTo(cx + w * 0.08f, arcTop + h * 0.09f)
+                }
+                drawPath(
+                    path = arrow,
+                    color = color,
+                    style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                )
+            }
+        }
+
+        Text(
+            text = "$seconds",
+            fontSize = 9.5.sp,
+            lineHeight = 9.5.sp,
+            fontWeight = FontWeight.Bold,
+            color = color,
+            style = TextStyle(
+                fontFeatureSettings = "tnum",
+                platformStyle = PlatformTextStyle(includeFontPadding = false)
+            ),
+            modifier = Modifier.offset(y = 1.dp)
+        )
+    }
+}
+
+@Composable
+fun PauseBarsIcon(color: Color, size: Dp = 32.dp) {
+    Canvas(modifier = Modifier.size(size)) {
+        val w = this.size.width
+        val h = this.size.height
+        val barWidth = w * 0.24f
+        val barHeight = h * 0.82f
+        val top = (h - barHeight) * 0.5f
+        val radius = CornerRadius(barWidth * 0.32f, barWidth * 0.32f)
+
+        drawRoundRect(
+            color = color,
+            topLeft = Offset(w * 0.18f, top),
+            size = Size(barWidth, barHeight),
+            cornerRadius = radius
+        )
+        drawRoundRect(
+            color = color,
+            topLeft = Offset(w * 0.58f, top),
+            size = Size(barWidth, barHeight),
+            cornerRadius = radius
+        )
+    }
+}
+
+@Composable
+fun SwapHorizArrowsIcon(color: Color, size: Dp = 15.dp) {
+    Canvas(modifier = Modifier.size(size)) {
+        val stroke = 1.6.dp.toPx()
+        val w = this.size.width
+        val h = this.size.height
+
+        // Top arrow pointing right (→)
+        val topY = h * 0.32f
+        drawLine(
+            color = color,
+            start = Offset(w * 0.14f, topY),
+            end = Offset(w * 0.86f, topY),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round
+        )
+        val rightHead = Path().apply {
+            moveTo(w * 0.66f, topY - h * 0.18f)
+            lineTo(w * 0.86f, topY)
+            lineTo(w * 0.66f, topY + h * 0.18f)
+        }
+        drawPath(
+            path = rightHead,
+            color = color,
+            style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
+
+        // Bottom arrow pointing left (←)
+        val botY = h * 0.68f
+        drawLine(
+            color = color,
+            start = Offset(w * 0.86f, botY),
+            end = Offset(w * 0.14f, botY),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round
+        )
+        val leftHead = Path().apply {
+            moveTo(w * 0.34f, botY - h * 0.18f)
+            lineTo(w * 0.14f, botY)
+            lineTo(w * 0.34f, botY + h * 0.18f)
+        }
+        drawPath(
+            path = leftHead,
+            color = color,
+            style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
+    }
+}
+
+@Composable
+fun AudioWaveformIcon(color: Color, size: Dp = 15.dp) {
+    Canvas(modifier = Modifier.size(size)) {
+        val stroke = 1.6.dp.toPx()
+        val w = this.size.width
+        val h = this.size.height
+        val bars = listOf(
+            0.18f to 0.36f,
+            0.39f to 0.74f,
+            0.61f to 0.52f,
+            0.82f to 0.30f
+        )
+        bars.forEach { (xFrac, hFrac) ->
+            val halfH = h * hFrac * 0.5f
+            drawLine(
+                color = color,
+                start = Offset(w * xFrac, h * 0.5f - halfH),
+                end = Offset(w * xFrac, h * 0.5f + halfH),
+                strokeWidth = stroke,
+                cap = StrokeCap.Round
+            )
+        }
+    }
+}
+
+@Composable
+fun ChapterListIcon(color: Color, size: Dp = 16.dp) {
+    Canvas(modifier = Modifier.size(size)) {
+        val stroke = 1.7.dp.toPx()
+        val dotRadius = 1.2.dp.toPx()
+        val w = this.size.width
+        val h = this.size.height
+        val rows = listOf(0.24f, 0.50f, 0.76f)
+        rows.forEach { yFrac ->
+            val y = h * yFrac
+            drawCircle(
+                color = color,
+                radius = dotRadius,
+                center = Offset(w * 0.16f, y)
+            )
+            drawLine(
+                color = color,
+                start = Offset(w * 0.36f, y),
+                end = Offset(w * 0.90f, y),
+                strokeWidth = stroke,
+                cap = StrokeCap.Round
             )
         }
     }
