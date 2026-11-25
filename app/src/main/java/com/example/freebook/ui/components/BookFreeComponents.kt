@@ -883,3 +883,83 @@ fun ChapterListIcon(color: Color, size: Dp = 16.dp) {
         }
     }
 }
+
+@Composable
+fun PlayTriangleIcon(color: Color, size: Dp = 34.dp) {
+    Canvas(modifier = Modifier.size(size)) {
+        val w = this.size.width
+        val h = this.size.height
+        val cornerStroke = 3.5.dp.toPx()
+        val path = Path().apply {
+            moveTo(w * 0.24f, h * 0.16f)
+            lineTo(w * 0.82f, h * 0.50f)
+            lineTo(w * 0.24f, h * 0.84f)
+            close()
+        }
+        drawPath(path = path, color = color)
+        drawPath(
+            path = path,
+            color = color,
+            style = Stroke(width = cornerStroke, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
+    }
+}
+
+@Composable
+fun CircularSkipArrowIcon(
+    forward: Boolean,
+    color: Color,
+    size: Dp = 28.dp
+) {
+    Canvas(modifier = Modifier.size(size)) {
+        val stroke = 2.1.dp.toPx()
+        val w = this.size.width
+        val h = this.size.height
+        val pad = w * 0.13f
+        val arcTop = h * 0.17f
+        val arcSize = Size(w - pad * 2f, h - pad - arcTop)
+        val cx = w * 0.5f
+
+        if (forward) {
+            drawArc(
+                color = color,
+                startAngle = -42f,
+                sweepAngle = 312f,
+                useCenter = false,
+                topLeft = Offset(pad, arcTop),
+                size = arcSize,
+                style = Stroke(width = stroke, cap = StrokeCap.Round)
+            )
+            val arrow = Path().apply {
+                moveTo(cx - w * 0.08f, arcTop - h * 0.095f)
+                lineTo(cx + w * 0.08f, arcTop)
+                lineTo(cx - w * 0.08f, arcTop + h * 0.095f)
+            }
+            drawPath(
+                path = arrow,
+                color = color,
+                style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round)
+            )
+        } else {
+            drawArc(
+                color = color,
+                startAngle = -138f,
+                sweepAngle = -312f,
+                useCenter = false,
+                topLeft = Offset(pad, arcTop),
+                size = arcSize,
+                style = Stroke(width = stroke, cap = StrokeCap.Round)
+            )
+            val arrow = Path().apply {
+                moveTo(cx + w * 0.08f, arcTop - h * 0.095f)
+                lineTo(cx - w * 0.08f, arcTop)
+                lineTo(cx + w * 0.08f, arcTop + h * 0.095f)
+            }
+            drawPath(
+                path = arrow,
+                color = color,
+                style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round)
+            )
+        }
+    }
+}

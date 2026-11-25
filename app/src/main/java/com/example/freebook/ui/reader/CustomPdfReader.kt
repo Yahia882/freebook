@@ -5,6 +5,11 @@ import android.graphics.Color as AndroidColor
 import android.graphics.RectF
 import android.os.ParcelFileDescriptor
 import android.util.LruCache
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -44,6 +49,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -54,6 +60,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -61,6 +68,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -80,6 +88,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
+import com.example.freebook.model.ActiveWordHighlight
 import com.example.freebook.model.AnnotationType
 import com.example.freebook.model.Book
 import com.example.freebook.model.BookAnnotation
@@ -537,6 +546,10 @@ fun CustomPdfReader(
     onBindNavigator: ((jumpToPageOneBased: (Int) -> Unit) -> Unit)? = null,
     onTableOfContentsLoaded: (List<PdfTocEntry>) -> Unit = {},
     onAutoDetectRtl: (Boolean) -> Unit = {},
+    activeWordHighlight: ActiveWordHighlight? = null,
+    isAudioWordTapEnabled: Boolean = false,
+    onWordDoubleTap: (pageIndex: Int, charOffset: Int) -> Unit = { _, _ -> },
+    onUserManualPageChange: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -556,6 +569,9 @@ fun CustomPdfReader(
     val latestOnBindNavigator by rememberUpdatedState(onBindNavigator)
     val latestOnTableOfContentsLoaded by rememberUpdatedState(onTableOfContentsLoaded)
     val latestOnAutoDetectRtl by rememberUpdatedState(onAutoDetectRtl)
+    val latestIsAudioWordTapEnabled by rememberUpdatedState(isAudioWordTapEnabled)
+    val latestOnWordDoubleTap by rememberUpdatedState(onWordDoubleTap)
+    val latestOnUserManualPageChange by rememberUpdatedState(onUserManualPageChange)
 
     // Native PDFium is not thread-safe for concurrent calls on the same document.
     val pdfDispatcher: CoroutineDispatcher = remember(book.id) {
@@ -587,6 +603,7 @@ fun CustomPdfReader(
     var activePageIndex by remember(book.id) {
         mutableIntStateOf(book.currentPageIndex.coerceAtLeast(0))
     }
+    var programmaticJumpUntilMs by remember(book.id) { mutableLongStateOf(0L) }
 
     // Active text selection state shared across pages
     var activeSelection by remember(book.id) { mutableStateOf<PdfActiveSelection?>(null) }
@@ -839,6 +856,7 @@ fun CustomPdfReader(
                     latestOnBindNavigator?.invoke { targetPageOneBased ->
                         val targetIdx = (targetPageOneBased - 1).coerceIn(0, totalPages - 1)
                         coroutineScope.launch {
+                            programmaticJumpUntilMs = System.currentTimeMillis() + 650L
                             zoomScale = 1f
                             panOffset = Offset.Zero
                             activeSelection = null
@@ -848,9 +866,22 @@ fun CustomPdfReader(
                         }
                     }
 
+                    launch {
+                        snapshotFlow { listState.isScrollInProgress }
+                            .distinctUntilChanged()
+                            .collect { isScrolling ->
+                                if (isScrolling && System.currentTimeMillis() > programmaticJumpUntilMs) {
+                                    latestOnUserManualPageChange()
+                                }
+                            }
+                    }
+
                     snapshotFlow { listState.firstVisibleItemIndex }
                         .distinctUntilChanged()
                         .collect { visibleIdx ->
+                            if (visibleIdx != activePageIndex && System.currentTimeMillis() > programmaticJumpUntilMs) {
+                                latestOnUserManualPageChange()
+                            }
                             emitProgress(visibleIdx)
                         }
                 }
@@ -880,6 +911,19 @@ fun CustomPdfReader(
                             themeTextColor = themeTextColor,
                             colorFilter = pageColorFilter,
                             savedHighlights = highlightsByPageOneBased[pageIdx + 1].orEmpty(),
+                            activeWordHighlight = activeWordHighlight?.takeIf { it.isActive && it.pageIndex == pageIdx },
+                            isAudioWordTapEnabled = latestIsAudioWordTapEnabled,
+                            onWordDoubleTap = latestOnWordDoubleTap,
+                            onDoubleTapZoom = {
+                                activeSelection = null
+                                isDraggingSelection = false
+                                if (zoomScale > 1.05f) {
+                                    zoomScale = 1f
+                                    panOffset = Offset.Zero
+                                } else {
+                                    zoomScale = 2.25f
+                                }
+                            },
                             activeSelection = activeSelection?.takeIf { it.pageIndex == pageIdx },
                             isDraggingSelection = isDraggingSelection,
                             onUpdateSelection = { sel, dragging ->
@@ -928,6 +972,7 @@ fun CustomPdfReader(
                     latestOnBindNavigator?.invoke { targetPageOneBased ->
                         val targetIdx = (targetPageOneBased - 1).coerceIn(0, totalPages - 1)
                         coroutineScope.launch {
+                            programmaticJumpUntilMs = System.currentTimeMillis() + 650L
                             zoomScale = 1f
                             panOffset = Offset.Zero
                             activeSelection = null
@@ -937,9 +982,22 @@ fun CustomPdfReader(
                         }
                     }
 
+                    launch {
+                        snapshotFlow { pagerState.isScrollInProgress }
+                            .distinctUntilChanged()
+                            .collect { isScrolling ->
+                                if (isScrolling && System.currentTimeMillis() > programmaticJumpUntilMs) {
+                                    latestOnUserManualPageChange()
+                                }
+                            }
+                    }
+
                     snapshotFlow { pagerState.currentPage }
                         .distinctUntilChanged()
                         .collect { currentPage ->
+                            if (currentPage != activePageIndex && System.currentTimeMillis() > programmaticJumpUntilMs) {
+                                latestOnUserManualPageChange()
+                            }
                             zoomScale = 1f
                             panOffset = Offset.Zero
                             emitProgress(currentPage)
@@ -971,6 +1029,19 @@ fun CustomPdfReader(
                         themeTextColor = themeTextColor,
                         colorFilter = pageColorFilter,
                         savedHighlights = highlightsByPageOneBased[pageIdx + 1].orEmpty(),
+                        activeWordHighlight = activeWordHighlight?.takeIf { it.isActive && it.pageIndex == pageIdx },
+                        isAudioWordTapEnabled = latestIsAudioWordTapEnabled,
+                        onWordDoubleTap = latestOnWordDoubleTap,
+                        onDoubleTapZoom = {
+                            activeSelection = null
+                            isDraggingSelection = false
+                            if (zoomScale > 1.05f) {
+                                zoomScale = 1f
+                                panOffset = Offset.Zero
+                            } else {
+                                zoomScale = 2.25f
+                            }
+                        },
                         activeSelection = activeSelection?.takeIf { it.pageIndex == pageIdx },
                         isDraggingSelection = isDraggingSelection,
                         onUpdateSelection = { sel, dragging ->
@@ -1028,6 +1099,10 @@ private fun PdfPageBitmapItem(
     themeTextColor: Color,
     colorFilter: ColorFilter?,
     savedHighlights: List<BookAnnotation>,
+    activeWordHighlight: ActiveWordHighlight?,
+    isAudioWordTapEnabled: Boolean,
+    onWordDoubleTap: (pageIndex: Int, charOffset: Int) -> Unit,
+    onDoubleTapZoom: () -> Unit,
     activeSelection: PdfActiveSelection?,
     isDraggingSelection: Boolean,
     onUpdateSelection: (PdfActiveSelection?, Boolean) -> Unit,
@@ -1135,8 +1210,12 @@ private fun PdfPageBitmapItem(
     val latestSavedHighlights by rememberUpdatedState(savedHighlights)
     val latestPageBoxSize by rememberUpdatedState(pageBoxSize)
     val latestOnUpdateSelection by rememberUpdatedState(onUpdateSelection)
+    val latestOnDismissSelection by rememberUpdatedState(onDismissSelection)
     val latestOnSingleTapEmpty by rememberUpdatedState(onSingleTapEmpty)
     val latestOnTapSavedHighlight by rememberUpdatedState(onTapSavedHighlight)
+    val latestIsAudioWordTapEnabled by rememberUpdatedState(isAudioWordTapEnabled)
+    val latestOnWordDoubleTap by rememberUpdatedState(onWordDoubleTap)
+    val latestOnDoubleTapZoom by rememberUpdatedState(onDoubleTapZoom)
 
     // Precompute merged line rects for active selection
     val activeSelectionRects = remember(layout, activeSelection) {
@@ -1192,6 +1271,7 @@ private fun PdfPageBitmapItem(
                 modifier = Modifier
                     .fillMaxSize()
                     // Tap: dismiss active selection, or open Highlight Color Picker on saved highlight, or toggle HUD
+                    // Fast Double-Tap on a word: jump TTS / Audiobook to that exact word (no conflict with long-press selection!)
                     .pointerInput(pageIndex, layout != null) {
                         detectTapGestures(
                             onTap = { tapOffset ->
@@ -1224,6 +1304,24 @@ private fun PdfPageBitmapItem(
                                     }
                                 }
                                 latestOnSingleTapEmpty()
+                            },
+                            onDoubleTap = { tapOffset ->
+                                val currentLayout = latestLayout
+                                val boxW = latestPageBoxSize.width.toFloat()
+                                val boxH = latestPageBoxSize.height.toFloat()
+                                if (latestIsAudioWordTapEnabled && currentLayout != null && boxW > 0f && boxH > 0f) {
+                                    val nx = (tapOffset.x / boxW).coerceIn(0f, 1f)
+                                    val ny = (tapOffset.y / boxH).coerceIn(0f, 1f)
+                                    val hitIdx = findNearestCharIndex(currentLayout, nx, ny, maxDistance = 0.12f)
+                                    if (hitIdx != null) {
+                                        val wordRange = expandToWordBounds(currentLayout.fullText, hitIdx)
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        latestOnDismissSelection()
+                                        latestOnWordDoubleTap(pageIndex, wordRange.first)
+                                        return@detectTapGestures
+                                    }
+                                }
+                                latestOnDoubleTapZoom()
                             }
                         )
                     }
@@ -1449,6 +1547,29 @@ private fun PdfPageBitmapItem(
                 }
             }
 
+            // 2b. Dedicated GPU-composited live TTS / Audiobook word highlight overlay
+            // Reads Animatable values strictly inside Draw phase on a hardware graphicsLayer
+            // so 60/120Hz smooth word gliding causes ZERO recompositions of PdfPageBitmapItem.
+            val targetWordNormRect = remember(layout, activeWordHighlight?.startCharOffset, activeWordHighlight?.endCharOffset) {
+                if (layout != null && activeWordHighlight != null && activeWordHighlight.isActive) {
+                    val endInclusive = (activeWordHighlight.endCharOffset - 1)
+                        .coerceAtLeast(activeWordHighlight.startCharOffset)
+                    mergeRangeToLineRects(
+                        charRects = layout.charRects,
+                        startIndex = activeWordHighlight.startCharOffset,
+                        endIndexInclusive = endInclusive
+                    ).firstOrNull()
+                } else {
+                    null
+                }
+            }
+            PdfGpuWordHighlightOverlay(
+                targetNormRect = targetWordNormRect,
+                isPaused = activeWordHighlight?.isPaused ?: false,
+                isDarkSurface = readerTheme.isDarkSurface,
+                modifier = Modifier.fillMaxSize()
+            )
+
             // 3. Floating Contextual Action Menu (CRM) Popup above the selected text
             if (activeSelection != null && !isDraggingSelection && activeSelectionRects.isNotEmpty() && layout != null && pageBoxSize.width > 0 && pageBoxSize.height > 0) {
                 val selectedText = remember(layout, activeSelection) {
@@ -1518,6 +1639,146 @@ private fun PdfPageBitmapItem(
             )
         }
     }
+}
+
+/**
+ * GPU-composited, zero-recomposition live word highlight overlay for PDF pages.
+ *
+ * Uses two pooled hardware-animated pill slots:
+ * - Same visual line: smoothly glides & resizes across words using a critically damped spring
+ *   so highlighting flows continuously without jarring cuts.
+ * - New visual line: cross-fades out the previous line's pill while gliding/fading in the new
+ *   line's pill (no diagonal fly-across).
+ * - Cleared (TTS Off / gap): smoothly fades both pills to 0 alpha.
+ *
+ * All [Animatable] values are read strictly inside `drawBehind` on a `graphicsLayer` (hardware
+ * RenderNode), keeping the UI composition thread completely free during 60/120Hz animations.
+ */
+private class PdfGpuPillSlot {
+    val left = Animatable(0f)
+    val top = Animatable(0f)
+    val right = Animatable(0f)
+    val bottom = Animatable(0f)
+    val alpha = Animatable(0f)
+    var lastRect: RectF? = null
+}
+
+@Composable
+private fun PdfGpuWordHighlightOverlay(
+    targetNormRect: RectF?,
+    isPaused: Boolean,
+    isDarkSurface: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val slot0 = remember { PdfGpuPillSlot() }
+    val slot1 = remember { PdfGpuPillSlot() }
+    var activeSlotIdx by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(targetNormRect) {
+        if (targetNormRect == null || targetNormRect.isEmpty) {
+            launch { slot0.alpha.animateTo(0f, tween(130)) }
+            launch { slot1.alpha.animateTo(0f, tween(130)) }
+            slot0.lastRect = null
+            slot1.lastRect = null
+            return@LaunchedEffect
+        }
+
+        val currentSlot = if (activeSlotIdx == 0) slot0 else slot1
+        val prev = currentSlot.lastRect
+        val sameLine = prev != null &&
+            currentSlot.alpha.value > 0.05f &&
+            abs(targetNormRect.centerY() - prev.centerY()) <= max(prev.height(), targetNormRect.height()) * 0.65f
+
+        val glideSpec = spring<Float>(
+            dampingRatio = 0.88f,
+            stiffness = Spring.StiffnessMedium
+        )
+
+        if (sameLine) {
+            currentSlot.lastRect = RectF(targetNormRect)
+            launch { currentSlot.left.animateTo(targetNormRect.left, glideSpec) }
+            launch { currentSlot.top.animateTo(targetNormRect.top, glideSpec) }
+            launch { currentSlot.right.animateTo(targetNormRect.right, glideSpec) }
+            launch { currentSlot.bottom.animateTo(targetNormRect.bottom, glideSpec) }
+            launch { currentSlot.alpha.animateTo(1f, tween(90)) }
+        } else {
+            // Fade out old line slot and bring in alternate slot cleanly on the new line
+            val oldSlot = currentSlot
+            oldSlot.lastRect = null
+            launch { oldSlot.alpha.animateTo(0f, tween(110, easing = FastOutSlowInEasing)) }
+
+            val nextIdx = 1 - activeSlotIdx
+            activeSlotIdx = nextIdx
+            val nextSlot = if (nextIdx == 0) slot0 else slot1
+            nextSlot.lastRect = RectF(targetNormRect)
+
+            val initRight = targetNormRect.left + targetNormRect.width() * 0.55f
+            nextSlot.left.snapTo(targetNormRect.left)
+            nextSlot.top.snapTo(targetNormRect.top)
+            nextSlot.right.snapTo(initRight)
+            nextSlot.bottom.snapTo(targetNormRect.bottom)
+            nextSlot.alpha.snapTo(0f)
+
+            launch { nextSlot.right.animateTo(targetNormRect.right, tween(135, easing = FastOutSlowInEasing)) }
+            launch { nextSlot.alpha.animateTo(1f, tween(120, easing = FastOutSlowInEasing)) }
+        }
+    }
+
+    val fillColor = remember(isDarkSurface, isPaused) {
+        when {
+            isDarkSurface && isPaused -> Color(0x4760A5FA)
+            isDarkSurface -> Color(0x5C38BDF8)
+            isPaused -> Color(0x383B82F6)
+            else -> Color(0x4A0EA5E9)
+        }
+    }
+
+    Box(
+        modifier = modifier
+            .graphicsLayer {
+                compositingStrategy = CompositingStrategy.Offscreen
+            }
+            .drawBehind {
+                val w = size.width
+                val h = size.height
+                if (w <= 0f || h <= 0f) return@drawBehind
+                val padX = 3.5f
+                val padY = 2.0f
+                val corner = CornerRadius(6f, 6f)
+
+                val a0 = slot0.alpha.value
+                if (a0 > 0.01f) {
+                    val l = (slot0.left.value * w - padX).coerceAtLeast(0f)
+                    val t = (slot0.top.value * h - padY).coerceAtLeast(0f)
+                    val r = (slot0.right.value * w + padX).coerceAtMost(w)
+                    val b = (slot0.bottom.value * h + padY).coerceAtMost(h)
+                    if (r > l && b > t) {
+                        drawRoundRect(
+                            color = fillColor.copy(alpha = fillColor.alpha * a0),
+                            topLeft = Offset(l, t),
+                            size = Size(r - l, b - t),
+                            cornerRadius = corner
+                        )
+                    }
+                }
+
+                val a1 = slot1.alpha.value
+                if (a1 > 0.01f) {
+                    val l = (slot1.left.value * w - padX).coerceAtLeast(0f)
+                    val t = (slot1.top.value * h - padY).coerceAtLeast(0f)
+                    val r = (slot1.right.value * w + padX).coerceAtMost(w)
+                    val b = (slot1.bottom.value * h + padY).coerceAtMost(h)
+                    if (r > l && b > t) {
+                        drawRoundRect(
+                            color = fillColor.copy(alpha = fillColor.alpha * a1),
+                            topLeft = Offset(l, t),
+                            size = Size(r - l, b - t),
+                            cornerRadius = corner
+                        )
+                    }
+                }
+            }
+    )
 }
 
 /**

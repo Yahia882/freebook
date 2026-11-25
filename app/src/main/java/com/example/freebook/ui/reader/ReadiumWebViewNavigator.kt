@@ -18,6 +18,7 @@ import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import com.example.freebook.R
+import com.example.freebook.model.ActiveWordHighlight
 import com.example.freebook.model.AnnotationType
 import com.example.freebook.model.Book
 import com.example.freebook.model.BookAnnotation
@@ -245,6 +246,11 @@ class ReadiumWebViewNavigator : DecorableNavigator {
     var onLocatorUpdated: ((charOffset: Int, currentPosition: Int, totalPositions: Int, visibleText: String) -> Unit)? = null
     var onSingleTapToggleHud: (() -> Unit)? = null
     var onInitialPositionRestored: (() -> Unit)? = null
+    var onUserManualNavigation: (() -> Unit)? = null
+    var onWordDoubleTap: ((charOffset: Int, wordText: String) -> Unit)? = null
+
+    @Volatile
+    private var audioWordTapEnabled: Boolean = false
 
     fun registerTableOfContents(entries: List<ReadiumTocEntry>) {
         tocLocatorsByHref.clear()
@@ -306,6 +312,7 @@ class ReadiumWebViewNavigator : DecorableNavigator {
         for ((group, decorations) in decorationsByGroup) {
             pushGroupDecorationsToWebView(group, decorations)
         }
+        setAudioWordTapEnabled(audioWordTapEnabled)
     }
 
     private fun pushGroupDecorationsToWebView(group: String, decorations: List<Decoration>) {
@@ -448,6 +455,53 @@ class ReadiumWebViewNavigator : DecorableNavigator {
         }
     }
 
+    fun setAudioWordTapEnabled(enabled: Boolean) {
+        audioWordTapEnabled = enabled
+        val targetWebView = webView ?: return
+        if (!isPageLoaded) return
+        mainHandler.post {
+            targetWebView.evaluateJavascript(
+                "window.__readiumSetAudioWordTapEnabled && window.__readiumSetAudioWordTapEnabled($enabled);",
+                null
+            )
+        }
+    }
+
+    /**
+     * Drives the GPU-composited (transform + opacity only, zero DOM mutation) smooth word
+     * highlight overlay inside the Readium WebView for both TTS and aligned Audiobooks.
+     * Passing `null` or inactive highlight fades out and removes all live highlighting.
+     */
+    fun updateLiveWordHighlight(
+        highlight: ActiveWordHighlight?,
+        isDarkSurface: Boolean
+    ) {
+        val targetWebView = webView ?: return
+        if (!isPageLoaded) return
+        if (highlight == null || !highlight.isActive) {
+            clearLiveWordHighlight()
+            return
+        }
+        val script = "window.__readiumSetGpuWordHighlight && window.__readiumSetGpuWordHighlight(" +
+            "${highlight.startCharOffset}, ${highlight.endCharOffset}, " +
+            "${highlight.estimatedDurationMs.coerceIn(70L, 800L)}, ${highlight.isPaused}, " +
+            "$isDarkSurface, ${highlight.shouldAutoFollow});"
+        mainHandler.post {
+            targetWebView.evaluateJavascript(script, null)
+        }
+    }
+
+    fun clearLiveWordHighlight() {
+        val targetWebView = webView ?: return
+        if (!isPageLoaded) return
+        mainHandler.post {
+            targetWebView.evaluateJavascript(
+                "window.__readiumClearGpuWordHighlight && window.__readiumClearGpuWordHighlight();",
+                null
+            )
+        }
+    }
+
     fun applyPreferencesInWebView(
         book: Book,
         preferences: ReaderPreferences,
@@ -565,6 +619,20 @@ class ReadiumWebViewNavigator : DecorableNavigator {
         fun onSingleTap() {
             mainHandler.post {
                 onSingleTapToggleHud?.invoke()
+            }
+        }
+
+        @JavascriptInterface
+        fun onManualNavigation() {
+            mainHandler.post {
+                onUserManualNavigation?.invoke()
+            }
+        }
+
+        @JavascriptInterface
+        fun onWordDoubleTap(charOffset: Int, wordText: String) {
+            mainHandler.post {
+                onWordDoubleTap?.invoke(charOffset.coerceAtLeast(0), wordText)
             }
         }
 
@@ -873,7 +941,51 @@ body.scroll-mode #r2-viewport {
     overflow: visible;
 }
 #r2-book-content {
+    position: relative;
     padding: 58px var(--RS__pageMargins) 56px var(--RS__pageMargins);
+}
+#r2-gpu-highlight-layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 0;
+    height: 0;
+    pointer-events: none;
+    z-index: 3;
+    overflow: visible;
+}
+.r2-gpu-pill-group {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 0;
+    height: 0;
+    pointer-events: none;
+    opacity: 0;
+    will-change: opacity;
+}
+.r2-gpu-pill-cap-l,
+.r2-gpu-pill-mid,
+.r2-gpu-pill-cap-r {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 24px;
+    transform-origin: 0 0;
+    will-change: transform;
+    backface-visibility: hidden;
+    background-color: rgba(56, 189, 248, 0.30);
+}
+.r2-gpu-pill-cap-l {
+    width: 5px;
+    border-radius: 5px 0 0 5px;
+}
+.r2-gpu-pill-mid {
+    width: 1px;
+}
+.r2-gpu-pill-cap-r {
+    width: 5px;
+    border-radius: 0 5px 5px 0;
 }
 body.paged-mode #r2-book-content {
     width: 100%;
@@ -911,7 +1023,7 @@ mark.r2-decoration-underline {
 </head>
 <body class="${if (isPaged) "paged-mode" else "scroll-mode"}">
 <div id="r2-viewport">
-    <div id="r2-book-content">$paragraphsHtml</div>
+    <div id="r2-book-content"><div id="r2-gpu-highlight-layer" aria-hidden="true"><div class="r2-gpu-pill-group" id="r2-pill-0"><div class="r2-gpu-pill-cap-l"></div><div class="r2-gpu-pill-mid"></div><div class="r2-gpu-pill-cap-r"></div></div><div class="r2-gpu-pill-group" id="r2-pill-1"><div class="r2-gpu-pill-cap-l"></div><div class="r2-gpu-pill-mid"></div><div class="r2-gpu-pill-cap-r"></div></div></div>$paragraphsHtml</div>
 </div>
 <script>
 (function() {
@@ -924,8 +1036,16 @@ mark.r2-decoration-underline {
         totalPages: 1,
         currentCharOffset: $initialCharOffset,
         isInitialRestorePending: true,
+        isAudioWordTapEnabled: false,
         decorationsByGroup: {},
         lastNonEmptySelection: null
+    };
+    var lastProgrammaticNavTime = 0;
+    var lastUserTouchScrollTime = 0;
+    var lastManualNavNotifyTime = 0;
+
+    window.__readiumSetAudioWordTapEnabled = function(enabled) {
+        state.isAudioWordTapEnabled = !!enabled;
     };
 
     var viewportEl = document.getElementById('r2-viewport');
@@ -1032,6 +1152,25 @@ mark.r2-decoration-underline {
         var foundFirst = false;
         var visibleParts = [];
 
+        // Probe the exact top-start visible word first so long multi-page paragraphs report
+        // the exact visible text on the current page rather than a paragraph start pages earlier.
+        var rawMargin = parseFloat(
+            getComputedStyle(document.documentElement).getPropertyValue('--RS__pageMargins')
+        ) || 24;
+        var probeXs = state.isRtl
+            ? [Math.max(12, winW - rawMargin - 16), Math.round(winW * 0.5), Math.max(12, winW - rawMargin - 48)]
+            : [Math.min(winW - 12, rawMargin + 16), Math.round(winW * 0.5), Math.min(winW - 12, rawMargin + 48)];
+        var probeYs = [74, 108, 150];
+        for (var py = 0; py < probeYs.length && !foundFirst; py++) {
+            for (var px = 0; px < probeXs.length && !foundFirst; px++) {
+                var hit = resolveWordAtPoint(probeXs[px], probeYs[py]);
+                if (hit && hit.charOffset >= 0) {
+                    firstOffset = hit.charOffset;
+                    foundFirst = true;
+                }
+            }
+        }
+
         for (var i = 0; i < paragraphs.length; i++) {
             var p = paragraphs[i];
             var r = p.getBoundingClientRect();
@@ -1076,20 +1215,37 @@ mark.r2-decoration-underline {
     }
 
     window.__readiumJumpToCharOffset = function(targetOffset) {
+        lastProgrammaticNavTime = Date.now();
         state.currentCharOffset = Math.max(0, targetOffset || 0);
         state.totalPages = computeTotalPages();
         if (state.isPaged) {
-            applyPageTransform(0, false);
-            var targetPage = findParagraphPage(state.currentCharOffset);
+            var stride = getPageStride();
+            var exactRect = measureWordRectInContent(state.currentCharOffset, state.currentCharOffset + 1);
+            var targetPage;
+            if (exactRect && exactRect.h > 0) {
+                targetPage = state.isRtl
+                    ? Math.max(0, Math.floor((stride - 1 - exactRect.x) / stride))
+                    : Math.max(0, Math.floor(exactRect.x / stride));
+                targetPage = Math.max(0, Math.min(targetPage, state.totalPages - 1));
+            } else {
+                applyPageTransform(0, false);
+                targetPage = findParagraphPage(state.currentCharOffset);
+            }
             applyPageTransform(targetPage, false);
         } else {
-            for (var i = 0; i < paragraphs.length; i++) {
-                var p = paragraphs[i];
-                var s = parseInt(p.dataset.start || "0", 10);
-                var e = parseInt(p.dataset.end || "0", 10);
-                if (state.currentCharOffset >= s && state.currentCharOffset <= e) {
-                    window.scrollTo({ top: Math.max(0, p.offsetTop - 64), behavior: 'instant' });
-                    break;
+            var scrollRect = measureWordRectInContent(state.currentCharOffset, state.currentCharOffset + 1);
+            if (scrollRect && scrollRect.h > 0) {
+                var targetTop = Math.max(0, window.scrollY + scrollRect.clientTop - 72);
+                window.scrollTo({ top: targetTop, behavior: 'instant' });
+            } else {
+                for (var i = 0; i < paragraphs.length; i++) {
+                    var p = paragraphs[i];
+                    var s = parseInt(p.dataset.start || "0", 10);
+                    var e = parseInt(p.dataset.end || "0", 10);
+                    if (state.currentCharOffset >= s && state.currentCharOffset <= e) {
+                        window.scrollTo({ top: Math.max(0, p.offsetTop - 64), behavior: 'instant' });
+                        break;
+                    }
                 }
             }
         }
@@ -1330,6 +1486,244 @@ mark.r2-decoration-underline {
         });
     };
 
+    // =========================================================================
+    // GPU-COMPOSITED SMOOTH WORD HIGHLIGHT OVERLAY (ZERO DOM MUTATION PER WORD)
+    // Animates strictly via transform: translate3d/scale + opacity on Chromium's
+    // GPU compositor thread with 2 pooled 3-part pills (glide same line, cross-fade new line).
+    // =========================================================================
+    var gpuPills = [
+        {
+            group: document.getElementById('r2-pill-0'),
+            capL: document.querySelector('#r2-pill-0 .r2-gpu-pill-cap-l'),
+            mid: document.querySelector('#r2-pill-0 .r2-gpu-pill-mid'),
+            capR: document.querySelector('#r2-pill-0 .r2-gpu-pill-cap-r'),
+            rect: null,
+            visible: false
+        },
+        {
+            group: document.getElementById('r2-pill-1'),
+            capL: document.querySelector('#r2-pill-1 .r2-gpu-pill-cap-l'),
+            mid: document.querySelector('#r2-pill-1 .r2-gpu-pill-mid'),
+            capR: document.querySelector('#r2-pill-1 .r2-gpu-pill-cap-r'),
+            rect: null,
+            visible: false
+        }
+    ];
+    var activePillIdx = 0;
+
+    function computePillTransforms(r) {
+        var padX = 3;
+        var padY = 2;
+        var x = r.x - padX;
+        var y = r.y - padY;
+        var w = Math.max(12, r.w + padX * 2);
+        var h = Math.max(14, r.h + padY * 2);
+        var capW = 5;
+        var sy = h / 24.0;
+        var midW = Math.max(0.5, w - capW * 2 + 1.0);
+        return {
+            capL: 'translate3d(' + x.toFixed(2) + 'px,' + y.toFixed(2) + 'px,0) scaleY(' + sy.toFixed(4) + ')',
+            mid: 'translate3d(' + (x + capW - 0.5).toFixed(2) + 'px,' + y.toFixed(2) + 'px,0) scale(' + midW.toFixed(2) + ',' + sy.toFixed(4) + ')',
+            capR: 'translate3d(' + (x + w - capW).toFixed(2) + 'px,' + y.toFixed(2) + 'px,0) scaleY(' + sy.toFixed(4) + ')'
+        };
+    }
+
+    function applyPillColor(pill, isDark, isPaused) {
+        var bg = isDark
+            ? (isPaused ? 'rgba(96, 165, 250, 0.28)' : 'rgba(56, 189, 248, 0.36)')
+            : (isPaused ? 'rgba(59, 130, 246, 0.22)' : 'rgba(14, 165, 233, 0.28)');
+        pill.capL.style.backgroundColor = bg;
+        pill.mid.style.backgroundColor = bg;
+        pill.capR.style.backgroundColor = bg;
+    }
+
+    function animatePillToRect(pill, fromRect, toRect, durationMs, fadeIn) {
+        var toT = computePillTransforms(toRect);
+        var opts = {
+            duration: Math.max(70, Math.min(180, durationMs)),
+            easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
+            fill: 'forwards'
+        };
+        if (fromRect && pill.capL.animate) {
+            var fromT = computePillTransforms(fromRect);
+            pill.capL.animate([{ transform: fromT.capL }, { transform: toT.capL }], opts);
+            pill.mid.animate([{ transform: fromT.mid }, { transform: toT.mid }], opts);
+            pill.capR.animate([{ transform: fromT.capR }, { transform: toT.capR }], opts);
+        } else {
+            pill.capL.style.transform = toT.capL;
+            pill.mid.style.transform = toT.mid;
+            pill.capR.style.transform = toT.capR;
+        }
+        if (fadeIn && pill.group.animate) {
+            pill.group.animate([{ opacity: 0 }, { opacity: 1 }], {
+                duration: 120,
+                easing: 'ease-out',
+                fill: 'forwards'
+            });
+        } else {
+            pill.group.style.opacity = '1';
+        }
+        pill.rect = toRect;
+        pill.visible = true;
+    }
+
+    function fadeOutPill(pill, durationMs) {
+        if (!pill || !pill.visible) return;
+        pill.visible = false;
+        pill.rect = null;
+        if (pill.group.animate) {
+            pill.group.animate([{ opacity: 1 }, { opacity: 0 }], {
+                duration: durationMs || 110,
+                easing: 'ease-in',
+                fill: 'forwards'
+            });
+        } else {
+            pill.group.style.opacity = '0';
+        }
+    }
+
+    function findParagraphForCharOffset(offset) {
+        var lo = 0;
+        var hi = paragraphs.length - 1;
+        while (lo <= hi) {
+            var mid = (lo + hi) >> 1;
+            var p = paragraphs[mid];
+            var s = parseInt(p.dataset.start || '0', 10);
+            var e = parseInt(p.dataset.end || '0', 10);
+            if (offset < s) {
+                hi = mid - 1;
+            } else if (offset >= e) {
+                lo = mid + 1;
+            } else {
+                return p;
+            }
+        }
+        return paragraphs[Math.max(0, Math.min(lo, paragraphs.length - 1))] || null;
+    }
+
+    function resolveDomTextPoint(para, localCharOffset) {
+        var walker = document.createTreeWalker(para, NodeFilter.SHOW_TEXT, null, false);
+        var node = walker.nextNode();
+        var acc = 0;
+        var lastNode = null;
+        while (node) {
+            lastNode = node;
+            var len = node.nodeValue ? node.nodeValue.length : 0;
+            if (localCharOffset <= acc + len) {
+                return { node: node, offset: Math.max(0, localCharOffset - acc) };
+            }
+            acc += len;
+            node = walker.nextNode();
+        }
+        if (lastNode) {
+            return { node: lastNode, offset: lastNode.nodeValue ? lastNode.nodeValue.length : 0 };
+        }
+        return null;
+    }
+
+    function measureWordRectInContent(startOffset, endOffset) {
+        var p = findParagraphForCharOffset(startOffset);
+        if (!p) return null;
+        var pStart = parseInt(p.dataset.start || '0', 10);
+        var pEnd = parseInt(p.dataset.end || '0', 10);
+        var localStart = Math.max(0, startOffset - pStart);
+        var localEnd = Math.max(localStart + 1, Math.min(pEnd - pStart, endOffset - pStart));
+
+        var ptStart = resolveDomTextPoint(p, localStart);
+        var ptEnd = resolveDomTextPoint(p, localEnd);
+        if (!ptStart || !ptEnd) return null;
+
+        try {
+            var range = document.createRange();
+            range.setStart(ptStart.node, ptStart.offset);
+            range.setEnd(ptEnd.node, ptEnd.offset);
+            var rects = range.getClientRects();
+            if (!rects || rects.length === 0) return null;
+            var best = rects[0];
+            for (var i = 0; i < rects.length; i++) {
+                if (rects[i].width > 1 && rects[i].height > 1) {
+                    best = rects[i];
+                    break;
+                }
+            }
+            var contentRect = contentEl.getBoundingClientRect();
+            return {
+                x: best.left - contentRect.left,
+                y: best.top - contentRect.top,
+                w: best.width,
+                h: best.height,
+                clientLeft: best.left,
+                clientRight: best.right,
+                clientTop: best.top,
+                clientBottom: best.bottom
+            };
+        } catch (err) {
+            return null;
+        }
+    }
+
+    window.__readiumClearGpuWordHighlight = function() {
+        fadeOutPill(gpuPills[0], 130);
+        fadeOutPill(gpuPills[1], 130);
+    };
+
+    window.__readiumSetGpuWordHighlight = function(startOffset, endOffset, estDurationMs, isPaused, isDark, autoFollow) {
+        var r = measureWordRectInContent(startOffset, endOffset);
+        if (!r || r.w <= 0 || r.h <= 0) return;
+
+        // Auto page-turn or smooth scroll ONLY when autoFollow is enabled (user has not detached to browse freely)
+        if (autoFollow !== false) {
+            var winW = window.innerWidth;
+            var winH = window.innerHeight;
+            if (state.isPaged) {
+                var stride = getPageStride();
+                if (r.clientLeft < 4 || r.clientRight > winW - 4) {
+                    var targetPage = state.isRtl
+                        ? Math.max(0, Math.floor((stride - 1 - r.x) / stride))
+                        : Math.max(0, Math.floor(r.x / stride));
+                    targetPage = Math.max(0, Math.min(targetPage, state.totalPages - 1));
+                    if (targetPage !== state.currentPage) {
+                        lastProgrammaticNavTime = Date.now();
+                        applyPageTransform(targetPage, true);
+                        setTimeout(function() { notifyLocator(false); }, 230);
+                    }
+                }
+            } else {
+                if (r.clientTop < 76 || r.clientBottom > winH - 132) {
+                    lastProgrammaticNavTime = Date.now();
+                    var targetScrollY = Math.max(0, window.scrollY + r.clientTop - Math.round(winH * 0.34));
+                    window.scrollTo({ top: targetScrollY, behavior: 'smooth' });
+                }
+            }
+        }
+
+        var curPill = gpuPills[activePillIdx];
+        var prevRect = curPill.visible ? curPill.rect : null;
+        var sameLine = prevRect !== null &&
+            Math.abs(r.y - prevRect.y) <= Math.max(prevRect.h, r.h) * 0.65 &&
+            Math.abs(r.x - prevRect.x) < getPageStride() * 0.85;
+
+        var animDur = Math.max(85, Math.min(165, Math.round((estDurationMs || 180) * 0.55)));
+
+        if (sameLine) {
+            applyPillColor(curPill, isDark, isPaused);
+            animatePillToRect(curPill, prevRect, r, animDur, false);
+        } else {
+            // New visual line or first word: cross-fade cleanly so pill never sweeps diagonally across text
+            fadeOutPill(curPill, 100);
+            activePillIdx = 1 - activePillIdx;
+            var nextPill = gpuPills[activePillIdx];
+            applyPillColor(nextPill, isDark, isPaused);
+            var startRect = {
+                x: state.isRtl ? (r.x + r.w * 0.35) : r.x,
+                y: r.y,
+                w: Math.max(10, r.w * 0.65),
+                h: r.h
+            };
+            animatePillToRect(nextPill, startRect, r, 125, true);
+        }
+    };
+
     function findClosestMark(node, clientX, clientY) {
         var cur = node;
         while (cur && cur !== document.body) {
@@ -1350,11 +1744,89 @@ mark.r2-decoration-underline {
         return null;
     }
 
-    // Touch / Swipe / Single-Tap handling inside Readium WebView
+    function isWordBoundaryChar(ch) {
+        if (!ch) return true;
+        return /[\s.,!?;:"'()\[\]{}«»“”‘’،؛؟—–\-\/|\\<>]/.test(ch);
+    }
+
+    function resolveWordAtPoint(clientX, clientY) {
+        var container = null;
+        var offset = 0;
+        try {
+            if (document.caretRangeFromPoint) {
+                var rng = document.caretRangeFromPoint(clientX, clientY);
+                if (rng) {
+                    container = rng.startContainer;
+                    offset = rng.startOffset;
+                }
+            } else if (document.caretPositionFromPoint) {
+                var pos = document.caretPositionFromPoint(clientX, clientY);
+                if (pos) {
+                    container = pos.offsetNode;
+                    offset = pos.offset;
+                }
+            }
+        } catch (err) {
+            return null;
+        }
+        if (!container) return null;
+        var para = findEnclosingParagraph(container);
+        if (!para) return null;
+
+        var raw = para.dataset.rawText || para.textContent || "";
+        if (!raw.length) return null;
+        var pStart = parseInt(para.dataset.start || "0", 10);
+        var local = getCharOffsetInParagraph(para, container, offset);
+        local = Math.max(0, Math.min(local, raw.length - 1));
+
+        // If caret landed on whitespace/punctuation, step slightly toward nearest word char
+        if (isWordBoundaryChar(raw.charAt(local))) {
+            if (local > 0 && !isWordBoundaryChar(raw.charAt(local - 1))) {
+                local = local - 1;
+            } else {
+                var fwd = local;
+                while (fwd < raw.length && isWordBoundaryChar(raw.charAt(fwd)) && fwd - local < 16) {
+                    fwd++;
+                }
+                if (fwd < raw.length && !isWordBoundaryChar(raw.charAt(fwd))) {
+                    local = fwd;
+                }
+            }
+        }
+
+        var wStart = local;
+        while (wStart > 0 && !isWordBoundaryChar(raw.charAt(wStart - 1))) {
+            wStart--;
+        }
+        var wEnd = local;
+        while (wEnd < raw.length && !isWordBoundaryChar(raw.charAt(wEnd))) {
+            wEnd++;
+        }
+        var wordText = raw.slice(wStart, wEnd).trim();
+        return {
+            charOffset: pStart + wStart,
+            text: wordText
+        };
+    }
+
+    function notifyManualNavThrottled() {
+        var now = Date.now();
+        if (now - lastManualNavNotifyTime < 250) return;
+        lastManualNavNotifyTime = now;
+        if (window.ReadiumBridge && window.ReadiumBridge.onManualNavigation) {
+            window.ReadiumBridge.onManualNavigation();
+        }
+    }
+
+    // Touch / Swipe / Single-Tap / Fast Double-Tap Word Jump handling inside Readium WebView
     var touchStartX = 0;
     var touchStartY = 0;
     var touchStartTime = 0;
     var touchMoved = false;
+    var lastTapTime = 0;
+    var lastTapX = 0;
+    var lastTapY = 0;
+    var pendingSingleTapTimer = null;
 
     document.addEventListener('touchstart', function(e) {
         if (!e.touches || e.touches.length !== 1) {
@@ -1373,21 +1845,54 @@ mark.r2-decoration-underline {
         var dy = e.touches[0].clientY - touchStartY;
         if (Math.hypot(dx, dy) > 12) {
             touchMoved = true;
+            if (!state.isPaged && Math.abs(dy) > 16) {
+                lastUserTouchScrollTime = Date.now();
+                notifyManualNavThrottled();
+            }
         }
     }, { passive: true });
 
     document.addEventListener('touchend', function(e) {
-        var duration = Date.now() - touchStartTime;
+        var now = Date.now();
+        var duration = now - touchStartTime;
         var touch = (e.changedTouches && e.changedTouches[0]) ? e.changedTouches[0] : null;
         if (!touch) return;
         var dx = touch.clientX - touchStartX;
         var dy = touch.clientY - touchStartY;
         var hasSelection = window.getSelection && window.getSelection().toString().trim().length > 0;
 
-        if (!touchMoved && duration < 450) {
+        if (!touchMoved && duration < 360) {
+            // Fast Double-Tap on a word -> jump TTS / Audiobook directly to that word (no conflict with long-press selection!)
+            var isFastDoubleTap = state.isAudioWordTapEnabled &&
+                lastTapTime > 0 &&
+                (now - lastTapTime) < 300 &&
+                Math.hypot(touch.clientX - lastTapX, touch.clientY - lastTapY) < 52;
+
+            if (isFastDoubleTap) {
+                if (pendingSingleTapTimer) {
+                    clearTimeout(pendingSingleTapTimer);
+                    pendingSingleTapTimer = null;
+                }
+                lastTapTime = 0;
+                var tappedWord = resolveWordAtPoint(touch.clientX, touch.clientY);
+                if (window.getSelection) {
+                    window.getSelection().removeAllRanges();
+                }
+                setTimeout(function() {
+                    if (window.getSelection) window.getSelection().removeAllRanges();
+                }, 35);
+                if (tappedWord && tappedWord.charOffset >= 0 && window.ReadiumBridge && window.ReadiumBridge.onWordDoubleTap) {
+                    window.ReadiumBridge.onWordDoubleTap(tappedWord.charOffset, tappedWord.text || "");
+                    return;
+                }
+            }
+
             if (!hasSelection) {
                 var targetMark = findClosestMark(e.target, touch.clientX, touch.clientY);
                 if (targetMark && window.ReadiumBridge && window.ReadiumBridge.onDecorationActivated) {
+                    lastTapTime = now;
+                    lastTapX = touch.clientX;
+                    lastTapY = touch.clientY;
                     var rect = targetMark.getBoundingClientRect();
                     window.ReadiumBridge.onDecorationActivated(
                         targetMark.getAttribute('data-decoration-group') || 'highlights',
@@ -1399,14 +1904,34 @@ mark.r2-decoration-underline {
                     );
                     return;
                 }
-                if (window.ReadiumBridge && window.ReadiumBridge.onSingleTap) {
-                    window.ReadiumBridge.onSingleTap();
+
+                lastTapTime = now;
+                lastTapX = touch.clientX;
+                lastTapY = touch.clientY;
+
+                if (state.isAudioWordTapEnabled) {
+                    if (pendingSingleTapTimer) clearTimeout(pendingSingleTapTimer);
+                    pendingSingleTapTimer = setTimeout(function() {
+                        pendingSingleTapTimer = null;
+                        if (window.ReadiumBridge && window.ReadiumBridge.onSingleTap) {
+                            window.ReadiumBridge.onSingleTap();
+                        }
+                    }, 260);
+                } else {
+                    if (window.ReadiumBridge && window.ReadiumBridge.onSingleTap) {
+                        window.ReadiumBridge.onSingleTap();
+                    }
                 }
             }
             return;
         }
 
         if (state.isPaged && !hasSelection && Math.abs(dx) > Math.abs(dy) * 1.3 && Math.abs(dx) > 36) {
+            if (pendingSingleTapTimer) {
+                clearTimeout(pendingSingleTapTimer);
+                pendingSingleTapTimer = null;
+            }
+            lastTapTime = 0;
             var nextDelta;
             if (state.isRtl) {
                 nextDelta = dx > 0 ? 1 : -1;
@@ -1414,12 +1939,17 @@ mark.r2-decoration-underline {
                 nextDelta = dx < 0 ? 1 : -1;
             }
             applyPageTransform(state.currentPage + nextDelta, true);
+            notifyManualNavThrottled();
             setTimeout(function() { notifyLocator(false); }, 230);
         }
     }, { passive: true });
 
     window.addEventListener('scroll', function() {
         if (!state.isPaged && !state.isInitialRestorePending) {
+            var now = Date.now();
+            if ((now - lastProgrammaticNavTime) > 550 && (now - lastUserTouchScrollTime) < 1500) {
+                notifyManualNavThrottled();
+            }
             notifyLocator(false);
         }
     }, { passive: true });
