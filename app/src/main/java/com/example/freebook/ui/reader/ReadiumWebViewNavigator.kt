@@ -18,6 +18,8 @@ import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import com.example.freebook.R
+import com.example.freebook.data.EpubTocOffsetResolver
+import com.example.freebook.data.RichEpubDocument
 import com.example.freebook.model.ActiveWordHighlight
 import com.example.freebook.model.AnnotationType
 import com.example.freebook.model.Book
@@ -223,6 +225,10 @@ class ReadiumWebViewNavigator : DecorableNavigator {
         internal set
 
     @Volatile
+    var isRichMode: Boolean = false
+        internal set
+
+    @Volatile
     var lastNonEmptySelection: CachedWebViewSelection? = null
         internal set
 
@@ -248,6 +254,8 @@ class ReadiumWebViewNavigator : DecorableNavigator {
     var onInitialPositionRestored: (() -> Unit)? = null
     var onUserManualNavigation: (() -> Unit)? = null
     var onWordDoubleTap: ((charOffset: Int, wordText: String) -> Unit)? = null
+    var onLinkHistoryChanged: ((canGoBack: Boolean) -> Unit)? = null
+    var onExternalLinkClicked: ((url: String) -> Unit)? = null
 
     @Volatile
     private var audioWordTapEnabled: Boolean = false
@@ -273,6 +281,24 @@ class ReadiumWebViewNavigator : DecorableNavigator {
                 }
             }
             ?: 0
+
+        if (isRichMode) {
+            val rawHref = locator.href.toString()
+            val normHref = EpubTocOffsetResolver.normalizeHrefPath(rawHref)
+            val fragment = locator.locations.fragments.firstOrNull()?.takeIf { it.isNotBlank() }
+                ?: rawHref.substringAfter('#', "").takeIf { it.isNotBlank() }
+                    ?.let { EpubTocOffsetResolver.percentDecode(it) }
+            if (normHref.isNotEmpty() && !normHref.equals("chapter.xhtml", ignoreCase = true)) {
+                jumpToHref(
+                    normalizedHref = normHref,
+                    fragmentId = fragment,
+                    fallbackCharOffset = targetOffset,
+                    pushHistory = true
+                )
+                return true
+            }
+        }
+
         jumpToCharOffset(targetOffset)
         return true
     }
@@ -282,6 +308,16 @@ class ReadiumWebViewNavigator : DecorableNavigator {
             ?: tocLocatorsByHref[link.href.toString().substringBefore('#')]
         if (mappedLocator != null) {
             return go(mappedLocator, animated)
+        }
+        if (isRichMode) {
+            val rawHref = link.href.toString()
+            val normHref = EpubTocOffsetResolver.normalizeHrefPath(rawHref)
+            val frag = rawHref.substringAfter('#', "").takeIf { it.isNotBlank() }
+                ?.let { EpubTocOffsetResolver.percentDecode(it) }
+            if (normHref.isNotEmpty()) {
+                jumpToHref(normHref, frag, fallbackCharOffset = 0, pushHistory = true)
+                return true
+            }
         }
         jumpToCharOffset(0)
         return true
@@ -455,6 +491,33 @@ class ReadiumWebViewNavigator : DecorableNavigator {
         }
     }
 
+    fun jumpToHref(
+        normalizedHref: String,
+        fragmentId: String?,
+        fallbackCharOffset: Int = 0,
+        pushHistory: Boolean = false
+    ) {
+        val targetWebView = webView ?: return
+        val hrefArg = JSONObject.quote(normalizedHref)
+        val fragArg = JSONObject.quote(fragmentId.orEmpty())
+        mainHandler.post {
+            targetWebView.evaluateJavascript(
+                "window.__readiumJumpToHref && window.__readiumJumpToHref($hrefArg, $fragArg, $fallbackCharOffset, $pushHistory);",
+                null
+            )
+        }
+    }
+
+    fun goBackInBook() {
+        val targetWebView = webView ?: return
+        mainHandler.post {
+            targetWebView.evaluateJavascript(
+                "window.__readiumGoBackInHistory && window.__readiumGoBackInHistory();",
+                null
+            )
+        }
+    }
+
     fun setAudioWordTapEnabled(enabled: Boolean) {
         audioWordTapEnabled = enabled
         val targetWebView = webView ?: return
@@ -525,6 +588,7 @@ class ReadiumWebViewNavigator : DecorableNavigator {
         }
         val bgHex = String.format(Locale.US, "#%06X", 0xFFFFFF and preferences.readerTheme.backgroundArgb.toInt())
         val textHex = String.format(Locale.US, "#%06X", 0xFFFFFF and preferences.readerTheme.textArgb.toInt())
+        val linkHex = linkColorForTheme(preferences.readerTheme)
         val isDark = preferences.readerTheme.isDarkSurface
         val selBg = if (isDark) "rgba(250, 204, 21, 0.35)" else "rgba(253, 224, 71, 0.48)"
         val isPaged = book.layoutType == PublicationLayoutType.REFLOWABLE &&
@@ -543,7 +607,9 @@ class ReadiumWebViewNavigator : DecorableNavigator {
             put("textAlign", textAlignCss)
             put("bgColor", bgHex)
             put("textColor", textHex)
+            put("linkColor", linkHex)
             put("selBgColor", selBg)
+            put("publisherStyles", preferences.publisherStyles)
             put("isPaged", isPaged)
             put("isFixedLayout", book.layoutType == PublicationLayoutType.FIXED)
             put("fitScale", fitScale)
@@ -633,6 +699,20 @@ class ReadiumWebViewNavigator : DecorableNavigator {
         fun onWordDoubleTap(charOffset: Int, wordText: String) {
             mainHandler.post {
                 onWordDoubleTap?.invoke(charOffset.coerceAtLeast(0), wordText)
+            }
+        }
+
+        @JavascriptInterface
+        fun onLinkHistoryChanged(canGoBack: Boolean) {
+            mainHandler.post {
+                onLinkHistoryChanged?.invoke(canGoBack)
+            }
+        }
+
+        @JavascriptInterface
+        fun onExternalLinkClicked(url: String) {
+            mainHandler.post {
+                onExternalLinkClicked?.invoke(url)
             }
         }
 
@@ -817,19 +897,27 @@ class ReadiumWebViewNavigator : DecorableNavigator {
             clipboard?.setPrimaryClip(ClipData.newPlainText("Book Quote", cleaned))
         }
 
+        fun linkColorForTheme(theme: ReaderTheme): String = when (theme) {
+            ReaderTheme.LIGHT -> "#0B66D4"
+            ReaderTheme.SEPIA -> "#1A5FA8"
+            ReaderTheme.DARK -> "#5AA9FF"
+            ReaderTheme.AMOLED -> "#4CA0F8"
+        }
+
         /**
-         * Builds the Readium XHTML document loaded into the Readium [WebView], including:
-         * - Publication-driven `dir="rtl"` / `dir="ltr"` and `lang` attributes
-         * - Paragraph nodes annotated with exact canonical character offsets `[data-start, data-end)`
-         * - Horizontal Swipe multi-column pagination & Vertical Scroll layout engines
-         * - Readium `Decoration` & `HtmlDecorationTemplates` rendering engine (`window.readiumApplyDecorations`)
-         * - Selection offset extractor (`window.__readiumGetSelectionPayload`) with live `selectionchange` caching
+         * Builds the Readium XHTML document loaded into the Readium [WebView], supporting BOTH:
+         * - Rich EPUB mode ([richDoc] != null): preserves real publisher XHTML, scoped CSS,
+         *   cover/front-matter pages, embedded images/SVG/fonts, spine page breaks, and blue
+         *   clickable internal hyperlinks while annotating leaf text blocks with canonical offsets
+         * - Plain-text fallback mode ([richDoc] == null): wraps canonical paragraphs safely
          */
         fun buildReadiumDocumentHtml(
             book: Book,
             canonicalText: String,
             preferences: ReaderPreferences,
-            initialCharOffset: Int
+            initialCharOffset: Int,
+            richDoc: RichEpubDocument? = null,
+            initialPageIndex: Int = 0
         ): String {
             val epubPrefs = preferences.toReadiumEpubPreferences()
             val fontSizeMultiplier = (epubPrefs.fontSize ?: 1.0).toFloat()
@@ -846,6 +934,7 @@ class ReadiumWebViewNavigator : DecorableNavigator {
             }
             val bgHex = String.format(Locale.US, "#%06X", 0xFFFFFF and preferences.readerTheme.backgroundArgb.toInt())
             val textHex = String.format(Locale.US, "#%06X", 0xFFFFFF and preferences.readerTheme.textArgb.toInt())
+            val linkHex = linkColorForTheme(preferences.readerTheme)
             val isDark = preferences.readerTheme.isDarkSurface
             val selBg = if (isDark) "rgba(250, 204, 21, 0.35)" else "rgba(253, 224, 71, 0.48)"
             val isRtl = book.readingDirection == BookReadingDirection.RTL
@@ -854,30 +943,51 @@ class ReadiumWebViewNavigator : DecorableNavigator {
             val isPaged = book.layoutType == PublicationLayoutType.REFLOWABLE &&
                 preferences.navigationMode == ReaderNavigationMode.HORIZONTAL_SWIPE
             val isFixedLayout = book.layoutType == PublicationLayoutType.FIXED
+            val isRichMode = richDoc != null
+            val publisherStylesOn = preferences.publisherStyles
             val fitScale = when (preferences.fixedLayoutFitMode) {
                 FixedLayoutFitMode.FIT_WIDTH -> 1.05f
                 FixedLayoutFitMode.FIT_PAGE -> 1.0f
                 FixedLayoutFitMode.ACTUAL_SIZE -> 1.22f
             }
 
-            // Build paragraph HTML with exact canonical character offsets
-            val paragraphsHtml = StringBuilder(canonicalText.length + 4096)
-            var cursor = 0
-            val len = canonicalText.length
-            while (cursor < len) {
-                val nextBreak = canonicalText.indexOf("\n\n", cursor)
-                val segEnd = if (nextBreak >= 0) nextBreak else len
-                val paragraphText = canonicalText.substring(cursor, segEnd)
-                if (paragraphText.isNotEmpty()) {
-                    paragraphsHtml.append("<p class=\"r2-para\" data-start=\"")
-                        .append(cursor)
-                        .append("\" data-end=\"")
-                        .append(segEnd)
-                        .append("\">")
-                        .append(escapeHtml(paragraphText))
-                        .append("</p>")
+            val bodyContentHtml: String = if (richDoc != null) {
+                richDoc.sectionsHtml
+            } else {
+                val paragraphsHtml = StringBuilder(canonicalText.length + 4096)
+                var cursor = 0
+                val len = canonicalText.length
+                while (cursor < len) {
+                    val nextBreak = canonicalText.indexOf("\n\n", cursor)
+                    val segEnd = if (nextBreak >= 0) nextBreak else len
+                    val paragraphText = canonicalText.substring(cursor, segEnd)
+                    if (paragraphText.isNotEmpty()) {
+                        paragraphsHtml.append("<p class=\"r2-para\" data-r2-block=\"1\" data-r2-start=\"")
+                            .append(cursor)
+                            .append("\" data-r2-end=\"")
+                            .append(segEnd)
+                            .append("\" data-start=\"")
+                            .append(cursor)
+                            .append("\" data-end=\"")
+                            .append(segEnd)
+                            .append("\">")
+                            .append(escapeHtml(paragraphText))
+                            .append("</p>")
+                    }
+                    cursor = if (nextBreak >= 0) nextBreak + 2 else len
                 }
-                cursor = if (nextBreak >= 0) nextBreak + 2 else len
+                paragraphsHtml.toString()
+            }
+
+            val publisherCssTag = if (richDoc != null && richDoc.publisherCss.isNotBlank()) {
+                "<style id=\"r2-publisher-styles\">\n${richDoc.publisherCss}\n</style>"
+            } else {
+                ""
+            }
+            val bodyClassAttr = buildString {
+                append(if (isPaged) "paged-mode" else "scroll-mode")
+                if (isRichMode) append(" rich-epub-mode")
+                append(if (publisherStylesOn) " publisher-styles-on" else " publisher-styles-off")
             }
 
             return """
@@ -894,6 +1004,7 @@ class ReadiumWebViewNavigator : DecorableNavigator {
     --RS__textAlign: $textAlignCss;
     --RS__backgroundColor: $bgHex;
     --RS__textColor: $textHex;
+    --RS__linkColor: $linkHex;
     --RS__selectionBackgroundColor: $selBg;
 }
 * {
@@ -910,13 +1021,17 @@ html, body {
     height: 100%;
     background-color: var(--RS__backgroundColor);
     color: var(--RS__textColor);
-    font-family: Georgia, "Times New Roman", serif;
+    font-family: Georgia, "Iowan Old Style", "Palatino Linotype", "Times New Roman", serif;
     font-size: var(--RS__fontSize);
     line-height: var(--RS__lineHeight);
     text-align: var(--RS__textAlign);
     direction: $dirAttr;
     -webkit-user-select: text;
     user-select: text;
+    overflow-wrap: break-word;
+    word-wrap: break-word;
+    -webkit-hyphens: auto;
+    hyphens: auto;
 }
 body.paged-mode {
     overflow: hidden;
@@ -1007,6 +1122,170 @@ p.r2-para {
     white-space: pre-wrap;
     word-wrap: break-word;
 }
+/* Rich EPUB editorial defaults (Apple Books-inspired typography & safe pagination) */
+.r2-spine-doc {
+    display: block;
+    margin: 0;
+    padding: 0;
+}
+.r2-spine-doc > .r2-body {
+    margin: 0;
+    padding: 0;
+}
+body.paged-mode .r2-spine-doc + .r2-spine-doc {
+    break-before: column;
+    -webkit-column-break-before: always;
+    page-break-before: always;
+}
+body.scroll-mode .r2-spine-doc + .r2-spine-doc {
+    margin-top: 2.4em;
+    padding-top: 1.6em;
+    border-top: 1px solid rgba(128, 128, 128, 0.22);
+}
+.r2-cover-page {
+    text-align: center;
+    break-inside: avoid;
+    -webkit-column-break-inside: avoid;
+}
+body.paged-mode .r2-cover-page {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: calc(100vh - 122px);
+}
+.r2-cover-page .r2-body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+}
+.r2-cover-page img,
+.r2-cover-page svg {
+    max-width: 100% !important;
+    max-height: calc(100vh - 130px) !important;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    margin: 0 auto;
+    display: block;
+}
+.r2-cover-page svg {
+    width: 100%;
+    height: 100%;
+}
+.r2-spine-doc h1,
+.r2-spine-doc h2,
+.r2-spine-doc h3,
+.r2-spine-doc h4,
+.r2-spine-doc h5,
+.r2-spine-doc h6 {
+    line-height: 1.24;
+    font-weight: 600;
+    margin-top: 0.9em;
+    margin-bottom: 0.5em;
+    break-after: avoid;
+    -webkit-column-break-after: avoid;
+    page-break-after: avoid;
+    -webkit-hyphens: none;
+    hyphens: none;
+}
+.r2-spine-doc h1 { font-size: 1.65em; }
+.r2-spine-doc h2 { font-size: 1.35em; }
+.r2-spine-doc h3 { font-size: 1.15em; }
+.r2-spine-doc h4 { font-size: 1.05em; }
+.r2-spine-doc p {
+    margin-top: 0;
+    margin-bottom: 0.65em;
+}
+.r2-spine-doc blockquote {
+    margin: 0.9em 1.2em;
+    padding-left: 0.85em;
+    border-left: 2px solid rgba(128, 128, 128, 0.35);
+    font-style: italic;
+}
+.r2-spine-doc ul,
+.r2-spine-doc ol {
+    margin: 0.6em 0;
+    padding-inline-start: 1.5em;
+}
+.r2-spine-doc li {
+    margin-bottom: 0.25em;
+}
+.r2-spine-doc hr {
+    border: 0;
+    border-top: 1px solid rgba(128, 128, 128, 0.35);
+    margin: 1.2em auto;
+    width: 45%;
+}
+.r2-spine-doc img {
+    max-width: 100% !important;
+    max-height: calc(100vh - 150px) !important;
+    height: auto !important;
+    width: auto;
+    object-fit: contain;
+    break-inside: avoid;
+    -webkit-column-break-inside: avoid;
+}
+.r2-spine-doc svg {
+    max-width: 100% !important;
+    max-height: calc(100vh - 150px) !important;
+    break-inside: avoid;
+    -webkit-column-break-inside: avoid;
+}
+.r2-spine-doc figure {
+    margin: 0.9em auto;
+    text-align: center;
+    break-inside: avoid;
+    -webkit-column-break-inside: avoid;
+}
+.r2-spine-doc figcaption {
+    font-size: 0.88em;
+    opacity: 0.78;
+    margin-top: 0.35em;
+}
+.r2-spine-doc table {
+    max-width: 100%;
+    border-collapse: collapse;
+    margin: 0.8em 0;
+    font-size: 0.92em;
+}
+.r2-spine-doc th,
+.r2-spine-doc td {
+    padding: 0.35em 0.5em;
+    border: 1px solid rgba(128, 128, 128, 0.28);
+}
+.r2-spine-doc pre,
+.r2-spine-doc code {
+    font-family: ui-monospace, "Cascadia Mono", "Roboto Mono", monospace;
+    font-size: 0.88em;
+}
+.r2-spine-doc pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0.8em 0;
+    padding: 0.6em 0.8em;
+    background: rgba(128, 128, 128, 0.12);
+    border-radius: 6px;
+}
+.r2-spine-doc sup,
+.r2-spine-doc sub {
+    font-size: 0.72em;
+    line-height: 0;
+}
+.r2-spine-doc a[data-r2-link="internal"],
+.r2-spine-doc a[data-r2-link="external"] {
+    color: var(--RS__linkColor) !important;
+    text-decoration: none;
+    cursor: pointer;
+    transition: opacity 0.12s ease;
+}
+.r2-spine-doc a[data-r2-link="internal"]:active,
+.r2-spine-doc a[data-r2-link="external"]:active {
+    opacity: 0.58;
+}
 mark.r2-decoration-highlight {
     color: inherit;
     border-radius: 3px;
@@ -1020,25 +1299,38 @@ mark.r2-decoration-underline {
     cursor: pointer;
 }
 </style>
+$publisherCssTag
+<style id="r2-theme-enforcement">
+.r2-spine-doc a[data-r2-link="internal"],
+.r2-spine-doc a[data-r2-link="external"],
+.r2-spine-doc a[data-r2-link="internal"] *,
+.r2-spine-doc a[data-r2-link="external"] * {
+    color: var(--RS__linkColor) !important;
+}
+</style>
 </head>
-<body class="${if (isPaged) "paged-mode" else "scroll-mode"}">
+<body class="$bodyClassAttr">
 <div id="r2-viewport">
-    <div id="r2-book-content"><div id="r2-gpu-highlight-layer" aria-hidden="true"><div class="r2-gpu-pill-group" id="r2-pill-0"><div class="r2-gpu-pill-cap-l"></div><div class="r2-gpu-pill-mid"></div><div class="r2-gpu-pill-cap-r"></div></div><div class="r2-gpu-pill-group" id="r2-pill-1"><div class="r2-gpu-pill-cap-l"></div><div class="r2-gpu-pill-mid"></div><div class="r2-gpu-pill-cap-r"></div></div></div>$paragraphsHtml</div>
+    <div id="r2-book-content"><div id="r2-gpu-highlight-layer" aria-hidden="true"><div class="r2-gpu-pill-group" id="r2-pill-0"><div class="r2-gpu-pill-cap-l"></div><div class="r2-gpu-pill-mid"></div><div class="r2-gpu-pill-cap-r"></div></div><div class="r2-gpu-pill-group" id="r2-pill-1"><div class="r2-gpu-pill-cap-l"></div><div class="r2-gpu-pill-mid"></div><div class="r2-gpu-pill-cap-r"></div></div></div>$bodyContentHtml</div>
 </div>
 <script>
 (function() {
     var state = {
         isPaged: $isPaged,
         isFixedLayout: $isFixedLayout,
+        isRichMode: $isRichMode,
+        publisherStyles: $publisherStylesOn,
         fitScale: $fitScale,
         isRtl: $isRtl,
         currentPage: 0,
         totalPages: 1,
         currentCharOffset: $initialCharOffset,
+        initialPageIndex: ${initialPageIndex.coerceAtLeast(0)},
         isInitialRestorePending: true,
         isAudioWordTapEnabled: false,
         decorationsByGroup: {},
-        lastNonEmptySelection: null
+        lastNonEmptySelection: null,
+        navHistoryStack: []
     };
     var lastProgrammaticNavTime = 0;
     var lastUserTouchScrollTime = 0;
@@ -1050,7 +1342,23 @@ mark.r2-decoration-underline {
 
     var viewportEl = document.getElementById('r2-viewport');
     var contentEl = document.getElementById('r2-book-content');
-    var paragraphs = Array.prototype.slice.call(document.querySelectorAll('p.r2-para'));
+    var paragraphs = Array.prototype.slice.call(document.querySelectorAll('[data-r2-block="1"]'));
+    var sections = Array.prototype.slice.call(document.querySelectorAll('section.r2-spine-doc'));
+
+    function getBlockStart(el) {
+        return parseInt((el && (el.dataset.r2Start || el.dataset.start)) || "0", 10);
+    }
+
+    function getBlockEnd(el) {
+        return parseInt((el && (el.dataset.r2End || el.dataset.end)) || "0", 10);
+    }
+
+    function syncBodyClasses() {
+        var cls = state.isPaged ? 'paged-mode' : 'scroll-mode';
+        if (state.isRichMode) cls += ' rich-epub-mode';
+        cls += state.publisherStyles ? ' publisher-styles-on' : ' publisher-styles-off';
+        document.body.className = cls;
+    }
 
     paragraphs.forEach(function(p) {
         p.dataset.rawText = p.textContent || "";
@@ -1122,8 +1430,8 @@ mark.r2-decoration-underline {
         var bestPara = paragraphs[0];
         for (var i = 0; i < paragraphs.length; i++) {
             var p = paragraphs[i];
-            var s = parseInt(p.dataset.start || "0", 10);
-            var e = parseInt(p.dataset.end || "0", 10);
+            var s = getBlockStart(p);
+            var e = getBlockEnd(p);
             if (targetOffset >= s && targetOffset <= e) {
                 bestPara = p;
                 break;
@@ -1152,8 +1460,6 @@ mark.r2-decoration-underline {
         var foundFirst = false;
         var visibleParts = [];
 
-        // Probe the exact top-start visible word first so long multi-page paragraphs report
-        // the exact visible text on the current page rather than a paragraph start pages earlier.
         var rawMargin = parseFloat(
             getComputedStyle(document.documentElement).getPropertyValue('--RS__pageMargins')
         ) || 24;
@@ -1182,12 +1488,29 @@ mark.r2-decoration-underline {
             }
             if (isVisible) {
                 if (!foundFirst) {
-                    firstOffset = parseInt(p.dataset.start || "0", 10);
+                    firstOffset = getBlockStart(p);
                     foundFirst = true;
                 }
                 visibleParts.push(p.dataset.rawText || p.textContent || "");
             }
         }
+
+        // On image-only cover/front-matter pages with no annotated text blocks, derive offset from visible spine section
+        if (!foundFirst && sections.length > 0) {
+            for (var si = 0; si < sections.length; si++) {
+                var sec = sections[si];
+                var sr = sec.getBoundingClientRect();
+                var secVisible = state.isPaged
+                    ? (sr.right > 8 && sr.left < winW - 8)
+                    : (sr.bottom > 56 && sr.top < winH - 56);
+                if (secVisible) {
+                    firstOffset = parseInt(sec.dataset.r2CanonStart || "0", 10) || 0;
+                    foundFirst = true;
+                    break;
+                }
+            }
+        }
+
         return {
             charOffset: firstOffset,
             visibleText: visibleParts.join("\n\n").slice(0, 1200)
@@ -1214,34 +1537,272 @@ mark.r2-decoration-underline {
         }
     }
 
+    function notifyLinkHistoryChanged() {
+        if (window.ReadiumBridge && window.ReadiumBridge.onLinkHistoryChanged) {
+            window.ReadiumBridge.onLinkHistoryChanged(state.navHistoryStack.length > 0);
+        }
+    }
+
+    function pushNavHistorySnapshot() {
+        state.navHistoryStack.push({
+            page: state.currentPage,
+            scrollY: window.scrollY || 0,
+            charOffset: state.currentCharOffset
+        });
+        if (state.navHistoryStack.length > 24) {
+            state.navHistoryStack.shift();
+        }
+        notifyLinkHistoryChanged();
+    }
+
+    function findSectionByHref(targetHref) {
+        if (!targetHref || sections.length === 0) return null;
+        var clean = String(targetHref).replace(/^\/+/, '');
+        var lower = clean.toLowerCase();
+        for (var i = 0; i < sections.length; i++) {
+            var s = sections[i];
+            var h = (s.dataset.r2Href || '').replace(/^\/+/, '');
+            if (h === clean || h.toLowerCase() === lower) return s;
+            var all = (s.dataset.r2Hrefs || '').split('|');
+            for (var j = 0; j < all.length; j++) {
+                var candidate = all[j].replace(/^\/+/, '');
+                if (candidate && (candidate === clean || candidate.toLowerCase() === lower)) return s;
+            }
+        }
+        for (var k = 0; k < sections.length; k++) {
+            var sec = sections[k];
+            var sh = (sec.dataset.r2Href || '').toLowerCase();
+            if (sh && (sh.endsWith('/' + lower) || lower.endsWith('/' + sh))) {
+                return sec;
+            }
+        }
+        return null;
+    }
+
+    function findElementByFragmentInSection(sectionEl, fragId) {
+        if (!sectionEl || !fragId) return null;
+        var lowerFrag = fragId.toLowerCase();
+        var candidates = sectionEl.querySelectorAll('[id], [name], [data-r2-id]');
+        var ciMatch = null;
+        for (var i = 0; i < candidates.length; i++) {
+            var el = candidates[i];
+            var idVal = el.getAttribute('id') || '';
+            var nameVal = el.getAttribute('name') || '';
+            var r2IdVal = el.getAttribute('data-r2-id') || '';
+            if (idVal === fragId || nameVal === fragId || r2IdVal === fragId) {
+                return el;
+            }
+            if (!ciMatch && (
+                idVal.toLowerCase() === lowerFrag ||
+                nameVal.toLowerCase() === lowerFrag ||
+                r2IdVal.toLowerCase() === lowerFrag
+            )) {
+                ciMatch = el;
+            }
+        }
+        return ciMatch;
+    }
+
+    function measureFirstVisibleRectOfElement(sectionEl, targetEl) {
+        if (!targetEl) return null;
+        var contentRect = contentEl.getBoundingClientRect();
+
+        function wrapRect(r) {
+            if (!r) return null;
+            return {
+                x: r.left - contentRect.left,
+                y: r.top - contentRect.top,
+                w: r.width,
+                h: r.height,
+                clientLeft: r.left,
+                clientRight: r.right,
+                clientTop: r.top,
+                clientBottom: r.bottom
+            };
+        }
+
+        function firstTextRectInside(rootEl) {
+            try {
+                var walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT, null, false);
+                var tn = walker.nextNode();
+                while (tn) {
+                    var val = tn.nodeValue || '';
+                    var idx = val.search(/\S/);
+                    if (idx >= 0) {
+                        var rng = document.createRange();
+                        rng.setStart(tn, idx);
+                        rng.setEnd(tn, Math.min(val.length, idx + 1));
+                        var rects = rng.getClientRects();
+                        if (rects && rects.length > 0 && rects[0].height > 0) {
+                            return wrapRect(rects[0]);
+                        }
+                    }
+                    tn = walker.nextNode();
+                }
+            } catch (err) {}
+            return null;
+        }
+
+        // 1. Prefer the first visible glyph inside targetEl
+        var insideTextRect = firstTextRectInside(targetEl);
+        if (insideTextRect) return insideTextRect;
+
+        // 2. Next check if targetEl is/contains an image or svg
+        var mediaEl = (targetEl.tagName === 'IMG' || targetEl.tagName === 'SVG')
+            ? targetEl
+            : (targetEl.querySelector ? targetEl.querySelector('img, svg') : null);
+        if (mediaEl) {
+            var mr = mediaEl.getBoundingClientRect();
+            if (mr && (mr.width > 0 || mr.height > 0)) {
+                return wrapRect(mr);
+            }
+        }
+
+        // 3. Empty anchor (e.g. <a id="sec_3"></a> before <h3>Title</h3>) -> advance to next text node in section
+        if (sectionEl) {
+            try {
+                var secWalker = document.createTreeWalker(sectionEl, NodeFilter.SHOW_TEXT, null, false);
+                secWalker.currentNode = targetEl;
+                var nextTn = secWalker.nextNode();
+                while (nextTn) {
+                    var nv = nextTn.nodeValue || '';
+                    var nIdx = nv.search(/\S/);
+                    if (nIdx >= 0) {
+                        var nRng = document.createRange();
+                        nRng.setStart(nextTn, nIdx);
+                        nRng.setEnd(nextTn, Math.min(nv.length, nIdx + 1));
+                        var nRects = nRng.getClientRects();
+                        if (nRects && nRects.length > 0 && nRects[0].height > 0) {
+                            return wrapRect(nRects[0]);
+                        }
+                    }
+                    nextTn = secWalker.nextNode();
+                }
+            } catch (err) {}
+        }
+
+        // 4. Direct bounding rect fallback
+        var br = targetEl.getBoundingClientRect();
+        if (br && (br.height > 0 || br.width > 0)) {
+            return wrapRect(br);
+        }
+        return sectionEl ? wrapRect(sectionEl.getBoundingClientRect()) : null;
+    }
+
+    function jumpToMeasuredRect(measureFn) {
+        state.totalPages = computeTotalPages();
+        if (state.isPaged) {
+            contentEl.style.transition = 'none';
+            var stride = getPageStride();
+            var rect = measureFn();
+            if (!rect) return false;
+            var targetPage = state.isRtl
+                ? Math.max(0, Math.floor((stride - 1 - rect.x) / stride))
+                : Math.max(0, Math.floor(rect.x / stride));
+            targetPage = Math.max(0, Math.min(targetPage, state.totalPages - 1));
+            applyPageTransform(targetPage, false);
+            var verifyRect = measureFn();
+            if (verifyRect) {
+                var vpLeft = viewportEl ? viewportEl.getBoundingClientRect().left : 0;
+                var relClientLeft = verifyRect.clientLeft - vpLeft;
+                var pageDelta = 0;
+                if (state.isRtl) {
+                    if (relClientLeft < 0) {
+                        pageDelta = Math.ceil(-relClientLeft / stride);
+                    } else if (relClientLeft >= stride) {
+                        pageDelta = -Math.floor(relClientLeft / stride);
+                    }
+                } else {
+                    if (relClientLeft < 0 || relClientLeft >= stride) {
+                        pageDelta = Math.floor(relClientLeft / stride);
+                    }
+                }
+                if (pageDelta !== 0) {
+                    var correctedPage = Math.max(0, Math.min(targetPage + pageDelta, state.totalPages - 1));
+                    if (correctedPage !== targetPage) {
+                        applyPageTransform(correctedPage, false);
+                    }
+                }
+            }
+            return true;
+        } else {
+            var scrollRect = measureFn();
+            if (!scrollRect) return false;
+            var targetTop = Math.max(0, window.scrollY + scrollRect.clientTop - 72);
+            window.scrollTo({ top: targetTop, behavior: 'instant' });
+            return true;
+        }
+    }
+
+    window.__readiumJumpToHref = function(targetHref, targetFrag, fallbackCharOffset, pushHistory) {
+        lastProgrammaticNavTime = Date.now();
+        var sectionEl = findSectionByHref(targetHref);
+        if (!sectionEl) {
+            if (typeof fallbackCharOffset === 'number' && fallbackCharOffset >= 0) {
+                if (pushHistory) pushNavHistorySnapshot();
+                window.__readiumJumpToCharOffset(fallbackCharOffset);
+            }
+            return;
+        }
+        var targetEl = (targetFrag && targetFrag.length > 0)
+            ? (findElementByFragmentInSection(sectionEl, targetFrag) || sectionEl)
+            : sectionEl;
+
+        if (pushHistory) {
+            pushNavHistorySnapshot();
+        }
+        var jumped = jumpToMeasuredRect(function() {
+            return measureFirstVisibleRectOfElement(sectionEl, targetEl);
+        });
+        if (!jumped && typeof fallbackCharOffset === 'number' && fallbackCharOffset >= 0) {
+            window.__readiumJumpToCharOffset(fallbackCharOffset);
+            return;
+        }
+        notifyLocator(false);
+        state.isInitialRestorePending = false;
+    };
+
+    window.__readiumGoBackInHistory = function() {
+        if (state.navHistoryStack.length === 0) {
+            notifyLinkHistoryChanged();
+            return;
+        }
+        var prev = state.navHistoryStack.pop();
+        notifyLinkHistoryChanged();
+        lastProgrammaticNavTime = Date.now();
+        if (state.isPaged) {
+            applyPageTransform(prev.page || 0, false);
+            notifyLocator(false);
+        } else {
+            window.scrollTo({ top: Math.max(0, prev.scrollY || 0), behavior: 'instant' });
+            notifyLocator(false);
+        }
+    };
+
     window.__readiumJumpToCharOffset = function(targetOffset) {
         lastProgrammaticNavTime = Date.now();
         state.currentCharOffset = Math.max(0, targetOffset || 0);
         state.totalPages = computeTotalPages();
         if (state.isPaged) {
-            var stride = getPageStride();
-            var exactRect = measureWordRectInContent(state.currentCharOffset, state.currentCharOffset + 1);
-            var targetPage;
-            if (exactRect && exactRect.h > 0) {
-                targetPage = state.isRtl
-                    ? Math.max(0, Math.floor((stride - 1 - exactRect.x) / stride))
-                    : Math.max(0, Math.floor(exactRect.x / stride));
-                targetPage = Math.max(0, Math.min(targetPage, state.totalPages - 1));
-            } else {
+            var jumped = jumpToMeasuredRect(function() {
+                var r = measureJumpRectInContent(state.currentCharOffset);
+                return (r && r.h > 0) ? r : null;
+            });
+            if (!jumped) {
                 applyPageTransform(0, false);
-                targetPage = findParagraphPage(state.currentCharOffset);
+                var fallbackPage = findParagraphPage(state.currentCharOffset);
+                applyPageTransform(fallbackPage, false);
             }
-            applyPageTransform(targetPage, false);
         } else {
-            var scrollRect = measureWordRectInContent(state.currentCharOffset, state.currentCharOffset + 1);
-            if (scrollRect && scrollRect.h > 0) {
-                var targetTop = Math.max(0, window.scrollY + scrollRect.clientTop - 72);
-                window.scrollTo({ top: targetTop, behavior: 'instant' });
-            } else {
+            var scrollJumped = jumpToMeasuredRect(function() {
+                var r = measureJumpRectInContent(state.currentCharOffset);
+                return (r && r.h > 0) ? r : null;
+            });
+            if (!scrollJumped) {
                 for (var i = 0; i < paragraphs.length; i++) {
                     var p = paragraphs[i];
-                    var s = parseInt(p.dataset.start || "0", 10);
-                    var e = parseInt(p.dataset.end || "0", 10);
+                    var s = getBlockStart(p);
+                    var e = getBlockEnd(p);
                     if (state.currentCharOffset >= s && state.currentCharOffset <= e) {
                         window.scrollTo({ top: Math.max(0, p.offsetTop - 64), behavior: 'instant' });
                         break;
@@ -1262,12 +1823,18 @@ mark.r2-decoration-underline {
         rootStyle.setProperty('--RS__textAlign', cfg.textAlign);
         rootStyle.setProperty('--RS__backgroundColor', cfg.bgColor);
         rootStyle.setProperty('--RS__textColor', cfg.textColor);
+        if (cfg.linkColor) {
+            rootStyle.setProperty('--RS__linkColor', cfg.linkColor);
+        }
         rootStyle.setProperty('--RS__selectionBackgroundColor', cfg.selBgColor);
 
         state.isPaged = !!cfg.isPaged;
         state.isFixedLayout = !!cfg.isFixedLayout;
         state.isRtl = !!cfg.isRtl;
-        document.body.className = state.isPaged ? 'paged-mode' : 'scroll-mode';
+        if (typeof cfg.publisherStyles === 'boolean') {
+            state.publisherStyles = cfg.publisherStyles;
+        }
+        syncBodyClasses();
         syncPagedGeometry();
         if (!state.isPaged) {
             contentEl.style.transform = 'none';
@@ -1276,7 +1843,12 @@ mark.r2-decoration-underline {
             state.currentCharOffset = cfg.targetCharOffset;
         }
         setTimeout(function() {
-            window.__readiumJumpToCharOffset(state.currentCharOffset);
+            if (state.isRichMode && state.currentCharOffset <= 0 && state.isPaged) {
+                applyPageTransform(state.currentPage, false);
+                notifyLocator(false);
+            } else {
+                window.__readiumJumpToCharOffset(state.currentCharOffset);
+            }
         }, 40);
     };
 
@@ -1294,8 +1866,10 @@ mark.r2-decoration-underline {
     function findEnclosingParagraph(node) {
         var cur = node;
         while (cur && cur !== document.body) {
-            if (cur.nodeType === 1 && cur.classList && cur.classList.contains('r2-para')) {
-                return cur;
+            if (cur.nodeType === 1) {
+                if (cur.getAttribute('data-r2-block') === '1' || (cur.classList && cur.classList.contains('r2-para'))) {
+                    return cur;
+                }
             }
             cur = cur.parentNode;
         }
@@ -1328,7 +1902,7 @@ mark.r2-decoration-underline {
         var absEnd = -1;
 
         if (startPara) {
-            var pStart = parseInt(startPara.dataset.start || "0", 10);
+            var pStart = getBlockStart(startPara);
             if (startPara.contains(range.startContainer)) {
                 absStart = pStart + getCharOffsetInParagraph(startPara, range.startContainer, range.startOffset);
             } else {
@@ -1337,8 +1911,8 @@ mark.r2-decoration-underline {
         }
 
         if (endPara) {
-            var pEndStart = parseInt(endPara.dataset.start || "0", 10);
-            var pEndMax = parseInt(endPara.dataset.end || "0", 10);
+            var pEndStart = getBlockStart(endPara);
+            var pEndMax = getBlockEnd(endPara);
             if (endPara.contains(range.endContainer)) {
                 absEnd = pEndStart + getCharOffsetInParagraph(endPara, range.endContainer, range.endOffset);
             } else {
@@ -1392,14 +1966,81 @@ mark.r2-decoration-underline {
         return JSON.stringify(current);
     };
 
-    function escapeHtmlJs(str) {
-        return str
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;');
+    function unwrapDecorationMarks(container) {
+        var marks = Array.prototype.slice.call(container.querySelectorAll('mark[data-decoration-id]'));
+        for (var i = 0; i < marks.length; i++) {
+            var mk = marks[i];
+            var parent = mk.parentNode;
+            if (!parent) continue;
+            while (mk.firstChild) {
+                parent.insertBefore(mk.firstChild, mk);
+            }
+            parent.removeChild(mk);
+            parent.normalize();
+        }
     }
 
-    // Readium DecorableNavigator Decoration rendering engine
+    function applyIntervalsToRichBlock(block, intervals) {
+        var textNodes = [];
+        var walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, null, false);
+        var node = walker.nextNode();
+        var acc = 0;
+        while (node) {
+            var nLen = node.nodeValue ? node.nodeValue.length : 0;
+            if (nLen > 0) {
+                textNodes.push({ node: node, start: acc, end: acc + nLen });
+                acc += nLen;
+            }
+            node = walker.nextNode();
+        }
+        if (textNodes.length === 0) return;
+
+        // Apply slices right-to-left within each text node so earlier offsets stay valid
+        for (var ti = 0; ti < textNodes.length; ti++) {
+            var tn = textNodes[ti];
+            var slices = [];
+            for (var ii = 0; ii < intervals.length; ii++) {
+                var iv = intervals[ii];
+                var s = Math.max(tn.start, iv.start);
+                var e = Math.min(tn.end, iv.end);
+                if (e > s) {
+                    slices.push({
+                        localStart: s - tn.start,
+                        localEnd: e - tn.start,
+                        iv: iv
+                    });
+                }
+            }
+            for (var si = slices.length - 1; si >= 0; si--) {
+                var sl = slices[si];
+                var targetNode = tn.node;
+                var valLen = targetNode.nodeValue ? targetNode.nodeValue.length : 0;
+                if (sl.localStart >= valLen || sl.localEnd <= sl.localStart) continue;
+                var clampedEnd = Math.min(valLen, sl.localEnd);
+                if (clampedEnd < valLen) {
+                    targetNode.splitText(clampedEnd);
+                }
+                var highlightNode = sl.localStart > 0 ? targetNode.splitText(sl.localStart) : targetNode;
+                var mark = document.createElement('mark');
+                mark.className = sl.iv.styleClass === 'underline'
+                    ? 'r2-decoration-underline'
+                    : 'r2-decoration-highlight';
+                mark.setAttribute('data-decoration-id', sl.iv.id);
+                mark.setAttribute('data-decoration-group', sl.iv.group);
+                if (sl.iv.styleClass === 'underline') {
+                    mark.style.borderBottomColor = sl.iv.tintCss;
+                } else {
+                    mark.style.backgroundColor = sl.iv.tintCss;
+                }
+                if (highlightNode.parentNode) {
+                    highlightNode.parentNode.insertBefore(mark, highlightNode);
+                    mark.appendChild(highlightNode);
+                }
+            }
+        }
+    }
+
+    // Readium DecorableNavigator Decoration rendering engine (DOM-preserving for rich XHTML)
     window.readiumApplyDecorations = function(group, decorations, templates) {
         state.decorationsByGroup[group] = decorations || [];
         var allDecorations = [];
@@ -1410,18 +2051,37 @@ mark.r2-decoration-underline {
         });
 
         paragraphs.forEach(function(p) {
-            var raw = p.dataset.rawText || "";
-            var pStart = parseInt(p.dataset.start || "0", 10);
-            var pEnd = parseInt(p.dataset.end || "0", 10);
+            unwrapDecorationMarks(p);
+            var raw = p.textContent || p.dataset.rawText || "";
+            p.dataset.rawText = raw;
+            var pStart = getBlockStart(p);
+            var pEnd = getBlockEnd(p);
+            var canonSpan = Math.max(1, pEnd - pStart);
             var intervals = [];
 
             allDecorations.forEach(function(entry) {
                 var d = entry.dec;
                 var dStart = typeof d.charOffset === 'number' ? d.charOffset : -1;
                 var dEnd = typeof d.endCharOffset === 'number' ? d.endCharOffset : -1;
-                if (dEnd > dStart && dStart < pEnd && dEnd > pStart) {
-                    var localStart = Math.max(0, dStart - pStart);
-                    var localEnd = Math.min(raw.length, dEnd - pStart);
+                var matchedByQuote = false;
+                if (d.quote && d.quote.length > 0 && dEnd > dStart && dStart < pEnd && dEnd > pStart) {
+                    var qIdx = raw.toLowerCase().indexOf(d.quote.toLowerCase());
+                    if (qIdx >= 0) {
+                        intervals.push({
+                            start: qIdx,
+                            end: Math.min(raw.length, qIdx + d.quote.length),
+                            id: d.id,
+                            group: entry.group,
+                            tintCss: d.tintCss || 'rgba(250, 204, 21, 0.42)',
+                            styleClass: d.styleClass || 'highlight'
+                        });
+                        matchedByQuote = true;
+                    }
+                }
+                if (!matchedByQuote && dEnd > dStart && dStart < pEnd && dEnd > pStart) {
+                    var ratio = raw.length / canonSpan;
+                    var localStart = Math.max(0, Math.round((dStart - pStart) * ratio));
+                    var localEnd = Math.min(raw.length, Math.round((dEnd - pStart) * ratio));
                     if (localEnd > localStart) {
                         intervals.push({
                             start: localStart,
@@ -1432,7 +2092,7 @@ mark.r2-decoration-underline {
                             styleClass: d.styleClass || 'highlight'
                         });
                     }
-                } else if (d.quote && d.quote.length > 0) {
+                } else if (!matchedByQuote && d.quote && d.quote.length > 0) {
                     var qLower = d.quote.toLowerCase();
                     var rawLower = raw.toLowerCase();
                     var idx = rawLower.indexOf(qLower);
@@ -1450,39 +2110,32 @@ mark.r2-decoration-underline {
                 }
             });
 
-            if (intervals.length === 0) {
-                if (p.innerHTML !== escapeHtmlJs(raw)) {
-                    p.textContent = raw;
-                }
-                return;
-            }
+            if (intervals.length === 0) return;
 
             intervals.sort(function(a, b) {
                 if (a.start !== b.start) return a.start - b.start;
                 return b.end - a.end;
             });
-            var htmlOut = "";
+            var merged = [];
             var cursor = 0;
-            intervals.forEach(function(iv) {
+            for (var k = 0; k < intervals.length; k++) {
+                var iv = intervals[k];
                 var segStart = Math.max(iv.start, cursor);
                 var segEnd = Math.min(iv.end, raw.length);
-                if (segEnd <= segStart) return;
-                if (segStart > cursor) {
-                    htmlOut += escapeHtmlJs(raw.slice(cursor, segStart));
-                }
-                var cls = iv.styleClass === 'underline' ? 'r2-decoration-underline' : 'r2-decoration-highlight';
-                var bgStyle = iv.styleClass === 'underline'
-                    ? ('border-bottom-color:' + iv.tintCss + ';')
-                    : ('background-color:' + iv.tintCss + ';');
-                htmlOut += '<mark class="' + cls + '" data-decoration-id="' + iv.id + '" data-decoration-group="' + iv.group + '" style="' + bgStyle + '">' +
-                    escapeHtmlJs(raw.slice(segStart, segEnd)) +
-                    '</mark>';
+                if (segEnd <= segStart) continue;
+                merged.push({
+                    start: segStart,
+                    end: segEnd,
+                    id: iv.id,
+                    group: iv.group,
+                    tintCss: iv.tintCss,
+                    styleClass: iv.styleClass
+                });
                 cursor = segEnd;
-            });
-            if (cursor < raw.length) {
-                htmlOut += escapeHtmlJs(raw.slice(cursor));
             }
-            p.innerHTML = htmlOut;
+            if (merged.length > 0) {
+                applyIntervalsToRichBlock(p, merged);
+            }
         });
     };
 
@@ -1588,8 +2241,8 @@ mark.r2-decoration-underline {
         while (lo <= hi) {
             var mid = (lo + hi) >> 1;
             var p = paragraphs[mid];
-            var s = parseInt(p.dataset.start || '0', 10);
-            var e = parseInt(p.dataset.end || '0', 10);
+            var s = getBlockStart(p);
+            var e = getBlockEnd(p);
             if (offset < s) {
                 hi = mid - 1;
             } else if (offset >= e) {
@@ -1621,14 +2274,34 @@ mark.r2-decoration-underline {
         return null;
     }
 
-    function measureWordRectInContent(startOffset, endOffset) {
-        var p = findParagraphForCharOffset(startOffset);
-        if (!p) return null;
-        var pStart = parseInt(p.dataset.start || '0', 10);
-        var pEnd = parseInt(p.dataset.end || '0', 10);
-        var localStart = Math.max(0, startOffset - pStart);
-        var localEnd = Math.max(localStart + 1, Math.min(pEnd - pStart, endOffset - pStart));
+    function mapCanonOffsetToDomLocal(para, canonOffset) {
+        var pStart = getBlockStart(para);
+        var pEnd = getBlockEnd(para);
+        var domLen = (para.dataset.rawText || para.textContent || '').length;
+        var canonSpan = Math.max(1, pEnd - pStart);
+        var rel = Math.max(0, canonOffset - pStart);
+        if (domLen <= 0) return 0;
+        if (Math.abs(domLen - canonSpan) <= 2) {
+            return Math.min(domLen, rel);
+        }
+        return Math.max(0, Math.min(domLen, Math.round(rel * (domLen / canonSpan))));
+    }
 
+    function measureJumpRectInContent(targetOffset) {
+        var p = findParagraphForCharOffset(targetOffset);
+        if (!p) return null;
+        var raw = p.dataset.rawText || p.textContent || '';
+        var rawLen = raw.length;
+        if (rawLen === 0) return null;
+        var localStart = Math.min(mapCanonOffsetToDomLocal(p, targetOffset), rawLen - 1);
+        while (localStart < rawLen - 1 && /\s/.test(raw.charAt(localStart))) {
+            localStart++;
+        }
+        var localEnd = Math.min(rawLen, localStart + 1);
+        return measureDomRangeRectInContent(p, localStart, localEnd);
+    }
+
+    function measureDomRangeRectInContent(p, localStart, localEnd) {
         var ptStart = resolveDomTextPoint(p, localStart);
         var ptEnd = resolveDomTextPoint(p, localEnd);
         if (!ptStart || !ptEnd) return null;
@@ -1660,6 +2333,16 @@ mark.r2-decoration-underline {
         } catch (err) {
             return null;
         }
+    }
+
+    function measureWordRectInContent(startOffset, endOffset) {
+        var p = findParagraphForCharOffset(startOffset);
+        if (!p) return null;
+        var rawLen = (p.dataset.rawText || p.textContent || '').length;
+        if (rawLen === 0) return null;
+        var localStart = Math.min(mapCanonOffsetToDomLocal(p, startOffset), rawLen - 1);
+        var localEnd = Math.max(localStart + 1, Math.min(rawLen, mapCanonOffsetToDomLocal(p, endOffset)));
+        return measureDomRangeRectInContent(p, localStart, localEnd);
     }
 
     window.__readiumClearGpuWordHighlight = function() {
@@ -1775,7 +2458,7 @@ mark.r2-decoration-underline {
 
         var raw = para.dataset.rawText || para.textContent || "";
         if (!raw.length) return null;
-        var pStart = parseInt(para.dataset.start || "0", 10);
+        var pStart = getBlockStart(para);
         var local = getCharOffsetInParagraph(para, container, offset);
         local = Math.max(0, Math.min(local, raw.length - 1));
 
@@ -1809,6 +2492,34 @@ mark.r2-decoration-underline {
         };
     }
 
+    function findClosestLink(node, clientX, clientY) {
+        var cur = node;
+        while (cur && cur !== document.body) {
+            if (cur.nodeType === 1 && cur.tagName && cur.tagName.toLowerCase() === 'a' && cur.hasAttribute('data-r2-link')) {
+                return cur;
+            }
+            cur = cur.parentNode;
+        }
+        if (typeof clientX === 'number' && typeof clientY === 'number' && document.elementFromPoint) {
+            var el = document.elementFromPoint(clientX, clientY);
+            while (el && el !== document.body) {
+                if (el.nodeType === 1 && el.tagName && el.tagName.toLowerCase() === 'a' && el.hasAttribute('data-r2-link')) {
+                    return el;
+                }
+                el = el.parentNode;
+            }
+        }
+        return null;
+    }
+
+    document.addEventListener('click', function(e) {
+        var linkEl = findClosestLink(e.target);
+        if (linkEl) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+    }, true);
+
     function notifyManualNavThrottled() {
         var now = Date.now();
         if (now - lastManualNavNotifyTime < 250) return;
@@ -1818,7 +2529,7 @@ mark.r2-decoration-underline {
         }
     }
 
-    // Touch / Swipe / Single-Tap / Fast Double-Tap Word Jump handling inside Readium WebView
+    // Touch / Swipe / Link-Tap / Single-Tap / Fast Double-Tap Word Jump handling inside Readium WebView
     var touchStartX = 0;
     var touchStartY = 0;
     var touchStartTime = 0;
@@ -1888,6 +2599,31 @@ mark.r2-decoration-underline {
             }
 
             if (!hasSelection) {
+                var targetLink = findClosestLink(e.target, touch.clientX, touch.clientY);
+                if (targetLink) {
+                    if (pendingSingleTapTimer) {
+                        clearTimeout(pendingSingleTapTimer);
+                        pendingSingleTapTimer = null;
+                    }
+                    lastTapTime = 0;
+                    var linkType = targetLink.getAttribute('data-r2-link');
+                    if (linkType === 'internal') {
+                        var tHref = targetLink.getAttribute('data-r2-target-href') || '';
+                        var tFrag = targetLink.getAttribute('data-r2-target-frag') || '';
+                        if (tHref.length > 0) {
+                            notifyManualNavThrottled();
+                            window.__readiumJumpToHref(tHref, tFrag, -1, true);
+                        }
+                        return;
+                    } else if (linkType === 'external') {
+                        var extUrl = targetLink.getAttribute('href') || '';
+                        if (extUrl && window.ReadiumBridge && window.ReadiumBridge.onExternalLinkClicked) {
+                            window.ReadiumBridge.onExternalLinkClicked(extUrl);
+                        }
+                        return;
+                    }
+                }
+
                 var targetMark = findClosestMark(e.target, touch.clientX, touch.clientY);
                 if (targetMark && window.ReadiumBridge && window.ReadiumBridge.onDecorationActivated) {
                     lastTapTime = now;
@@ -1954,15 +2690,45 @@ mark.r2-decoration-underline {
         }
     }, { passive: true });
 
+    var imgRefreshTimer = null;
+    document.addEventListener('load', function(e) {
+        if (e.target && e.target.tagName === 'IMG' && !state.isInitialRestorePending) {
+            if (imgRefreshTimer) clearTimeout(imgRefreshTimer);
+            imgRefreshTimer = setTimeout(function() {
+                state.totalPages = computeTotalPages();
+                if (state.isPaged) {
+                    applyPageTransform(state.currentPage, false);
+                }
+                notifyLocator(false);
+            }, 90);
+        }
+    }, true);
+
     window.addEventListener('resize', function() {
         setTimeout(function() {
-            window.__readiumJumpToCharOffset(state.currentCharOffset);
+            if (state.isRichMode && state.currentCharOffset <= 0 && state.isPaged) {
+                applyPageTransform(state.currentPage, false);
+                notifyLocator(false);
+            } else {
+                window.__readiumJumpToCharOffset(state.currentCharOffset);
+            }
         }, 50);
     });
 
     window.addEventListener('load', function() {
         setTimeout(function() {
-            window.__readiumJumpToCharOffset(state.currentCharOffset);
+            if (state.isRichMode && state.currentCharOffset <= 0) {
+                state.totalPages = computeTotalPages();
+                if (state.isPaged) {
+                    applyPageTransform(state.initialPageIndex || 0, false);
+                } else {
+                    window.scrollTo({ top: 0, behavior: 'instant' });
+                }
+                notifyLocator(true);
+                state.isInitialRestorePending = false;
+            } else {
+                window.__readiumJumpToCharOffset(state.currentCharOffset);
+            }
         }, 30);
     });
 })();
@@ -1993,7 +2759,7 @@ mark.r2-decoration-underline {
                             baseLocator.copy(
                                 title = link.title ?: baseLocator.title,
                                 locations = baseLocator.locations.copy(
-                                    totalProgression = baseLocator.locations.totalProgression ?: totalProg,
+                                    totalProgression = totalProg,
                                     otherLocations = baseLocator.locations.otherLocations + ("charOffset" to resolvedOffset)
                                 )
                             )

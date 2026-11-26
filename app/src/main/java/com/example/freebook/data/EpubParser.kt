@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
+import android.util.LruCache
 import androidx.core.text.HtmlCompat
 import com.example.freebook.data.storage.BookFileStorage
 import com.example.freebook.data.storage.ContentIdentityHasher
@@ -18,7 +19,11 @@ import com.example.freebook.ui.reader.ReadiumWebViewNavigator
 import io.legere.pdfiumandroid.PdfiumCore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import org.readium.r2.shared.ExperimentalReadiumApi
+import org.readium.r2.shared.publication.Link
+import org.readium.r2.shared.publication.Locator
 import org.readium.r2.shared.publication.ReadingProgression
 import org.readium.r2.shared.publication.services.cover
 import org.readium.r2.shared.util.asset.AssetRetriever
@@ -142,23 +147,107 @@ object EpubParser {
         fileStorage.saveCoverImageBytes(bytes)
     }
 
-    private data class SpineChapterSlice(
-        val startOffset: Int,
-        val endOffset: Int,
-        val rawHtml: String
-    )
+    private const val TOC_CACHE_VERSION = 2
+    private val tocMemoryCache = LruCache<String, List<ReadiumTocEntry>>(16)
 
-    private fun normalizeCanonicalSegment(raw: String): String =
-        raw.replace("\r\n", "\n")
-            .replace('\r', '\n')
-            .replace(Regex("[ \\t]+"), " ")
-            .replace(Regex("\\n{3,}"), "\n\n")
-            .trim()
+    private fun buildTocMemoryCacheKey(book: Book, canonicalLength: Int): String =
+        "${book.id}|${book.bookFilePath}|$canonicalLength"
+
+    /**
+     * Synchronous in-memory cache lookup so re-opening a book or rotating the screen displays
+     * its Table of Contents immediately without flashing a loading spinner.
+     */
+    fun getCachedReflowableTableOfContents(
+        book: Book,
+        canonicalBookTextLength: Int
+    ): List<ReadiumTocEntry>? {
+        if (book.bookFilePath.isBlank() || canonicalBookTextLength <= 0) return null
+        return tocMemoryCache.get(buildTocMemoryCacheKey(book, canonicalBookTextLength))
+    }
+
+    private fun tocDiskCacheFile(context: Context, bookId: String): File {
+        val dir = File(context.cacheDir, "epub_toc_cache").apply { mkdirs() }
+        val safeId = bookId.replace(Regex("[^A-Za-z0-9_-]"), "_")
+        return File(dir, "${safeId}_v${TOC_CACHE_VERSION}.json")
+    }
+
+    private fun readTocFromDiskCache(
+        context: Context,
+        book: Book,
+        bookFile: File,
+        canonicalLength: Int
+    ): List<ReadiumTocEntry>? {
+        val cacheFile = tocDiskCacheFile(context, book.id)
+        if (!cacheFile.exists()) return null
+        return runCatching {
+            val root = JSONObject(cacheFile.readText(Charsets.UTF_8))
+            if (root.optInt("version", -1) != TOC_CACHE_VERSION) return null
+            if (root.optString("bookFilePath") != book.bookFilePath) return null
+            if (root.optLong("fileLength", -1L) != bookFile.length()) return null
+            if (root.optLong("lastModified", -1L) != bookFile.lastModified()) return null
+            if (root.optInt("canonicalLength", -1) != canonicalLength) return null
+
+            val arr = root.optJSONArray("entries") ?: return null
+            val restored = ArrayList<ReadiumTocEntry>(arr.length())
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val id = obj.optString("id")
+                val title = obj.optString("title")
+                val depth = obj.optInt("depth", 0)
+                val linkObj = obj.optJSONObject("link") ?: continue
+                val link = Link.fromJSON(linkObj) ?: continue
+                val locator = obj.optJSONObject("locator")?.let { Locator.fromJSON(it) }
+                restored.add(
+                    ReadiumTocEntry(
+                        id = id,
+                        title = title,
+                        depth = depth,
+                        link = link,
+                        locator = locator
+                    )
+                )
+            }
+            restored
+        }.getOrNull()
+    }
+
+    private fun writeTocToDiskCache(
+        context: Context,
+        book: Book,
+        bookFile: File,
+        canonicalLength: Int,
+        entries: List<ReadiumTocEntry>
+    ) {
+        runCatching {
+            val arr = JSONArray()
+            for (entry in entries) {
+                val item = JSONObject().apply {
+                    put("id", entry.id)
+                    put("title", entry.title)
+                    put("depth", entry.depth)
+                    put("link", entry.link.toJSON())
+                    entry.locator?.let { put("locator", it.toJSON()) }
+                }
+                arr.put(item)
+            }
+            val root = JSONObject().apply {
+                put("version", TOC_CACHE_VERSION)
+                put("bookFilePath", book.bookFilePath)
+                put("fileLength", bookFile.length())
+                put("lastModified", bookFile.lastModified())
+                put("canonicalLength", canonicalLength)
+                put("entries", arr)
+            }
+            val cacheFile = tocDiskCacheFile(context, book.id)
+            cacheFile.writeText(root.toString(), Charsets.UTF_8)
+        }
+    }
 
     /**
      * Opens the book's Readium [Publication] on [Dispatchers.IO], retrieves `publication.tableOfContents`,
-     * and resolves each chapter [org.readium.r2.shared.publication.Link] to a Readium
-     * [org.readium.r2.shared.publication.Locator] mapped to its canonical character offset.
+     * and resolves each chapter & nested `#fragment` [org.readium.r2.shared.publication.Link] to a Readium
+     * [org.readium.r2.shared.publication.Locator] mapped to its exact canonical character offset.
+     * Results are cached in memory and on disk for instant subsequent opens.
      */
     @OptIn(ExperimentalReadiumApi::class)
     suspend fun loadReflowableTableOfContents(
@@ -169,6 +258,15 @@ object EpubParser {
         if (book.bookFilePath.isBlank()) return@withContext emptyList()
         val bookFile = File(book.bookFilePath)
         if (!bookFile.exists()) return@withContext emptyList()
+
+        val totalLen = canonicalBookText.length
+        val memKey = buildTocMemoryCacheKey(book, totalLen)
+        tocMemoryCache.get(memKey)?.let { return@withContext it }
+
+        readTocFromDiskCache(context, book, bookFile, totalLen)?.let { cached ->
+            tocMemoryCache.put(memKey, cached)
+            return@withContext cached
+        }
 
         val httpClient = DefaultHttpClient()
         val assetRetriever = AssetRetriever(
@@ -193,109 +291,65 @@ object EpubParser {
 
         try {
             val rawTocLinks = publication.tableOfContents
-            if (rawTocLinks.isEmpty()) return@withContext emptyList()
+            if (rawTocLinks.isEmpty()) {
+                tocMemoryCache.put(memKey, emptyList())
+                writeTocToDiskCache(context, book, bookFile, totalLen, emptyList())
+                return@withContext emptyList()
+            }
 
-            val slicesByHref = LinkedHashMap<String, SpineChapterSlice>()
-            var rollingOffset = 0
-            val totalLen = canonicalBookText.length
-
+            val spineDocs = ArrayList<EpubTocOffsetResolver.SpineDocument>(publication.readingOrder.size)
             for (spineLink in publication.readingOrder) {
                 val resource = publication.get(spineLink) ?: continue
                 val rawBytes = resource.use { res -> res.read().getOrNull() } ?: continue
                 if (rawBytes.isEmpty()) continue
 
                 val rawHtml = rawBytes.toString(Charsets.UTF_8)
-                val cleaned = htmlToCleanText(rawHtml)
-                val normalized = normalizeCanonicalSegment(cleaned)
+                val hrefKeys = ArrayList<String>(2)
+                publication.locatorFromLink(spineLink)?.href?.toString()
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { hrefKeys.add(it) }
+                spineLink.href.toString()
+                    .takeIf { it.isNotBlank() }
+                    ?.let { hrefKeys.add(it) }
 
-                val sliceStart: Int
-                val sliceEnd: Int
-                if (normalized.length > 15 && totalLen > 0) {
-                    val probe = normalized.take(80)
-                    val matchedStart = canonicalBookText.indexOf(probe, startIndex = rollingOffset)
-                        .takeIf { it >= 0 }
-                        ?: rollingOffset.coerceIn(0, (totalLen - 1).coerceAtLeast(0))
-                    sliceStart = matchedStart
-                    sliceEnd = (sliceStart + normalized.length).coerceAtMost(totalLen)
-                    rollingOffset = (sliceEnd + 2).coerceAtMost(totalLen)
-                } else {
-                    sliceStart = rollingOffset.coerceIn(0, (totalLen - 1).coerceAtLeast(0))
-                    sliceEnd = sliceStart
-                }
-
-                val slice = SpineChapterSlice(
-                    startOffset = sliceStart,
-                    endOffset = sliceEnd,
-                    rawHtml = rawHtml
+                spineDocs.add(
+                    EpubTocOffsetResolver.SpineDocument(
+                        hrefKeys = hrefKeys,
+                        rawHtml = rawHtml
+                    )
                 )
-
-                val locatorHrefKey = publication.locatorFromLink(spineLink)?.href?.toString()
-                if (!locatorHrefKey.isNullOrBlank()) {
-                    slicesByHref[locatorHrefKey] = slice
-                    slicesByHref[Uri.decode(locatorHrefKey)] = slice
-                }
-                val cleanHrefKey = spineLink.href.toString().substringBefore('#').trimStart('/')
-                if (cleanHrefKey.isNotEmpty()) {
-                    slicesByHref[cleanHrefKey] = slice
-                    slicesByHref[Uri.decode(cleanHrefKey)] = slice
-                }
             }
 
-            ReadiumWebViewNavigator.flattenTableOfContentsLinks(
+            val tocIndex = EpubTocOffsetResolver.buildBookIndex(
+                canonicalBookText = canonicalBookText,
+                spineDocuments = spineDocs
+            )
+
+            var lastResolvedOffset = 0
+            val resolvedEntries = ReadiumWebViewNavigator.flattenTableOfContentsLinks(
                 publication = publication,
                 links = rawTocLinks,
                 totalChars = totalLen,
                 resolveCharOffset = { tocLink, baseLocator ->
-                    val locatorHref = baseLocator?.href?.toString().orEmpty()
-                    val cleanLinkHref = tocLink.href.toString().substringBefore('#').trimStart('/')
-                    val slice = slicesByHref[locatorHref]
-                        ?: slicesByHref[Uri.decode(locatorHref)]
-                        ?: slicesByHref[cleanLinkHref]
-                        ?: slicesByHref[Uri.decode(cleanLinkHref)]
-                        ?: slicesByHref.entries.firstOrNull { (k, _) ->
-                            cleanLinkHref.isNotEmpty() && (k.endsWith("/$cleanLinkHref") || cleanLinkHref.endsWith("/$k"))
-                        }?.value
-
-                    var resolved = slice?.startOffset ?: 0
                     val fragmentId = baseLocator?.locations?.fragments?.firstOrNull()?.takeIf { it.isNotBlank() }
                         ?: tocLink.href.toString().substringAfter('#', "").takeIf { it.isNotBlank() }
-
-                    if (fragmentId != null && slice != null && totalLen > 0) {
-                        val decodedFrag = Uri.decode(fragmentId)
-                        val fragPattern = Regex(
-                            """(?:id|name)\s*=\s*["']${Regex.escape(decodedFrag)}["']""",
-                            RegexOption.IGNORE_CASE
-                        )
-                        val match = fragPattern.find(slice.rawHtml)
-                        var refined = false
-                        if (match != null) {
-                            val snippet = normalizeCanonicalSegment(
-                                htmlToCleanText(slice.rawHtml.substring(match.range.first))
-                            ).lineSequence().firstOrNull { it.isNotBlank() }?.take(80)
-                            if (!snippet.isNullOrBlank()) {
-                                val foundIdx = canonicalBookText.indexOf(snippet, startIndex = slice.startOffset)
-                                if (foundIdx in slice.startOffset..slice.endOffset) {
-                                    resolved = foundIdx
-                                    refined = true
-                                }
-                            }
-                        }
-                        if (!refined && !tocLink.title.isNullOrBlank()) {
-                            val titleProbe = tocLink.title!!.trim()
-                            val foundByTitle = canonicalBookText.indexOf(
-                                titleProbe,
-                                startIndex = slice.startOffset,
-                                ignoreCase = true
-                            )
-                            if (foundByTitle in slice.startOffset..slice.endOffset) {
-                                resolved = foundByTitle
-                            }
-                        }
-                    }
-
-                    resolved.coerceIn(0, (totalLen - 1).coerceAtLeast(0))
+                    val offset = tocIndex.resolveTocCharOffset(
+                        candidateHrefs = listOf(
+                            baseLocator?.href?.toString(),
+                            tocLink.href.toString()
+                        ),
+                        fragmentId = fragmentId,
+                        tocTitle = tocLink.title,
+                        fallbackSearchStartOrig = lastResolvedOffset
+                    )
+                    lastResolvedOffset = offset
+                    offset
                 }
             )
+
+            tocMemoryCache.put(memKey, resolvedEntries)
+            writeTocToDiskCache(context, book, bookFile, totalLen, resolvedEntries)
+            resolvedEntries
         } catch (_: Exception) {
             emptyList()
         } finally {

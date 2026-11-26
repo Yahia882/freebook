@@ -1,9 +1,13 @@
 package com.example.freebook.ui.screens
 
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.graphics.Color as AndroidColor
 import android.graphics.RectF
+import android.net.Uri
 import android.view.ViewGroup
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.animation.AnimatedContent
@@ -29,6 +33,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -60,6 +65,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
@@ -92,7 +98,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -116,7 +126,10 @@ import androidx.compose.ui.window.PopupProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.freebook.data.EpubArchiveResourceServer
 import com.example.freebook.data.EpubParser
+import com.example.freebook.data.EpubRichDocumentBuilder
+import com.example.freebook.data.RichEpubDocument
 import com.example.freebook.model.AnnotationType
 import com.example.freebook.model.Book
 import com.example.freebook.model.BookAnnotation
@@ -153,6 +166,21 @@ import org.readium.r2.shared.ExperimentalReadiumApi
 import org.readium.r2.shared.publication.Locator
 import java.util.Locale
 import kotlin.math.roundToInt
+
+private data class ReflowableTocLoadState(
+    val isLoading: Boolean,
+    val entries: List<ReadiumTocEntry>
+)
+
+private data class RichEpubLoadState(
+    val isResolved: Boolean,
+    val document: RichEpubDocument?
+)
+
+private data class EpubResourceServerState(
+    val isReady: Boolean,
+    val server: EpubArchiveResourceServer?
+)
 
 private fun normalizeCanonicalText(raw: String): String =
     raw.replace("\r\n", "\n")
@@ -242,7 +270,57 @@ fun BookReaderScreen(
         }
     }
 
+    val epubResourceServerState by produceState(
+        initialValue = EpubResourceServerState(
+            isReady = book.layoutType != PublicationLayoutType.REFLOWABLE || book.bookFilePath.isBlank(),
+            server = null
+        ),
+        key1 = book.id,
+        key2 = book.bookFilePath,
+        key3 = book.coverImagePath
+    ) {
+        val opened = if (book.layoutType == PublicationLayoutType.REFLOWABLE && book.bookFilePath.isNotBlank()) {
+            withContext(Dispatchers.IO) {
+                EpubArchiveResourceServer.open(book.bookFilePath, book.coverImagePath)
+            }
+        } else {
+            null
+        }
+        value = EpubResourceServerState(isReady = true, server = opened)
+        awaitDispose {
+            opened?.close()
+        }
+    }
+    val epubResourceServer = epubResourceServerState.server
+
+    val richEpubLoadState by produceState(
+        initialValue = RichEpubLoadState(
+            isResolved = book.layoutType == PublicationLayoutType.FIXED || book.bookFilePath.isBlank(),
+            document = null
+        ),
+        key1 = book.id,
+        key2 = canonicalBookText.length,
+        key3 = epubResourceServerState
+    ) {
+        if (book.layoutType != PublicationLayoutType.REFLOWABLE || book.bookFilePath.isBlank()) {
+            value = RichEpubLoadState(isResolved = true, document = null)
+            return@produceState
+        }
+        if (canonicalBookText.isEmpty() || !epubResourceServerState.isReady) {
+            value = RichEpubLoadState(isResolved = false, document = null)
+            return@produceState
+        }
+        val loaded = EpubRichDocumentBuilder.loadRichEpubDocument(
+            context = context,
+            book = book,
+            canonicalBookText = canonicalBookText,
+            resourceServer = epubResourceServerState.server
+        )
+        value = RichEpubLoadState(isResolved = true, document = loaded)
+    }
+
     var isWebViewDocumentReady by remember(book.id) { mutableStateOf(false) }
+    var canNavigateBackInBook by remember(book.id) { mutableStateOf(false) }
     var isPdfDocumentReady by remember(book.id) { mutableStateOf(false) }
     var pdfJumpToPage by remember(book.id) { mutableStateOf<((Int) -> Unit)?>(null) }
     var pdfTocEntries by remember(book.id) { mutableStateOf<List<PdfTocEntry>>(emptyList()) }
@@ -256,7 +334,7 @@ fun BookReaderScreen(
     val isBookContentLoaded = if (book.layoutType == PublicationLayoutType.FIXED) {
         isPdfDocumentReady
     } else {
-        canonicalBookText.isNotEmpty() && isWebViewDocumentReady
+        canonicalBookText.isNotEmpty() && richEpubLoadState.isResolved && isWebViewDocumentReady
     }
 
     // Stable locator state (canonical character offset, derived position, derived total positions)
@@ -340,23 +418,38 @@ fun BookReaderScreen(
 
     val webViewCurrentLocator by readiumNavigator.currentLocator.collectAsState()
 
-    val reflowableTocEntries by produceState(
-        initialValue = emptyList(),
+    val reflowableTocState by produceState(
+        initialValue = ReflowableTocLoadState(
+            isLoading = book.layoutType == PublicationLayoutType.REFLOWABLE && book.bookFilePath.isNotBlank(),
+            entries = emptyList()
+        ),
         key1 = book.id,
         key2 = canonicalBookText.length
     ) {
-        if (book.layoutType == PublicationLayoutType.REFLOWABLE && canonicalBookText.isNotEmpty()) {
-            val loaded = EpubParser.loadReflowableTableOfContents(
-                context = context,
-                book = book,
-                canonicalBookText = canonicalBookText
-            )
-            readiumNavigator.registerTableOfContents(loaded)
-            value = loaded
-        } else {
-            value = emptyList()
+        if (book.layoutType != PublicationLayoutType.REFLOWABLE || book.bookFilePath.isBlank()) {
+            value = ReflowableTocLoadState(isLoading = false, entries = emptyList())
+            return@produceState
         }
+        if (canonicalBookText.isEmpty()) {
+            value = ReflowableTocLoadState(isLoading = true, entries = emptyList())
+            return@produceState
+        }
+        val cached = EpubParser.getCachedReflowableTableOfContents(book, canonicalBookText.length)
+        if (cached != null) {
+            readiumNavigator.registerTableOfContents(cached)
+            value = ReflowableTocLoadState(isLoading = false, entries = cached)
+            return@produceState
+        }
+        value = ReflowableTocLoadState(isLoading = true, entries = emptyList())
+        val loaded = EpubParser.loadReflowableTableOfContents(
+            context = context,
+            book = book,
+            canonicalBookText = canonicalBookText
+        )
+        readiumNavigator.registerTableOfContents(loaded)
+        value = ReflowableTocLoadState(isLoading = false, entries = loaded)
     }
+    val reflowableTocEntries = reflowableTocState.entries
 
     val currentProgressionFraction by remember(
         book.layoutType,
@@ -478,6 +571,16 @@ fun BookReaderScreen(
                 audioDockMode = audioDockMode,
                 context = context
             )
+        },
+        onLinkHistoryChanged = { canGoBack ->
+            canNavigateBackInBook = canGoBack
+        },
+        onExternalLinkClicked = { url ->
+            if (url.startsWith("http://", ignoreCase = true) || url.startsWith("https://", ignoreCase = true)) {
+                runCatching {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                }
+            }
         }
     )
 
@@ -786,18 +889,27 @@ fun BookReaderScreen(
                 },
                 modifier = Modifier.fillMaxSize()
             )
-        } else if (canonicalBookText.isNotEmpty()) {
-            val initialHtml = remember(book.id, canonicalBookText) {
+        } else if (canonicalBookText.isNotEmpty() && richEpubLoadState.isResolved) {
+            val richDoc = richEpubLoadState.document
+            val bookBaseUrl = "https://readium.local/book/${book.id}/"
+            LaunchedEffect(readiumNavigator, richDoc) {
+                readiumNavigator.isRichMode = (richDoc != null)
+            }
+            val initialHtml = remember(book.id, canonicalBookText, richDoc) {
                 val initialOffset = book.resolveSavedCharOffset(canonicalBookText.length)
+                readiumNavigator.isRichMode = (richDoc != null)
                 ReadiumWebViewNavigator.buildReadiumDocumentHtml(
                     book = book,
                     canonicalText = canonicalBookText,
                     preferences = preferences,
-                    initialCharOffset = initialOffset
+                    initialCharOffset = initialOffset,
+                    richDoc = richDoc,
+                    initialPageIndex = book.currentPageIndex.coerceAtLeast(0)
                 )
             }
 
             val latestSession by rememberUpdatedState(activeSession)
+            val latestResourceServer by rememberUpdatedState(epubResourceServer)
 
             AndroidView(
                 modifier = Modifier
@@ -815,12 +927,40 @@ fun BookReaderScreen(
                         isHorizontalScrollBarEnabled = false
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
+                        settings.loadsImagesAutomatically = true
+                        settings.allowFileAccess = false
                         settings.builtInZoomControls = (book.layoutType == PublicationLayoutType.FIXED)
                         settings.displayZoomControls = false
                         settings.setSupportZoom(book.layoutType == PublicationLayoutType.FIXED)
 
                         addJavascriptInterface(readiumNavigator.JsBridge(), "ReadiumBridge")
                         webViewClient = object : WebViewClient() {
+                            override fun shouldInterceptRequest(
+                                view: WebView?,
+                                request: WebResourceRequest?
+                            ): WebResourceResponse? {
+                                val urlStr = request?.url?.toString() ?: return null
+                                return latestResourceServer?.interceptRequest(urlStr, bookBaseUrl)
+                                    ?: super.shouldInterceptRequest(view, request)
+                            }
+
+                            override fun shouldOverrideUrlLoading(
+                                view: WebView?,
+                                request: WebResourceRequest?
+                            ): Boolean {
+                                val urlStr = request?.url?.toString().orEmpty()
+                                if (
+                                    (urlStr.startsWith("http://", ignoreCase = true) ||
+                                        urlStr.startsWith("https://", ignoreCase = true)) &&
+                                    !urlStr.startsWith(bookBaseUrl)
+                                ) {
+                                    runCatching {
+                                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(urlStr)))
+                                    }
+                                }
+                                return true
+                            }
+
                             override fun onPageFinished(view: WebView?, url: String?) {
                                 super.onPageFinished(view, url)
                                 readiumNavigator.isPageLoaded = true
@@ -842,7 +982,7 @@ fun BookReaderScreen(
 
                         readiumNavigator.webView = this
                         loadDataWithBaseURL(
-                            "https://readium.local/book/${book.id}/",
+                            bookBaseUrl,
                             initialHtml,
                             "text/html",
                             "UTF-8",
@@ -1107,7 +1247,7 @@ fun BookReaderScreen(
         }
 
         // =========================================================================
-        // DISTRACTION-FREE FOOTER
+        // DISTRACTION-FREE FOOTER + IN-BOOK LINK BACK BUTTON (Apple Books-style)
         // =========================================================================
         AnimatedVisibility(
             visible = isBookContentLoaded && !isActiveReaderHudVisible,
@@ -1126,6 +1266,72 @@ fun BookReaderScreen(
                     fontWeight = FontWeight.Medium,
                     color = readerTextColor.copy(alpha = 0.55f)
                 )
+            }
+        }
+
+        AnimatedVisibility(
+            visible = isBookContentLoaded &&
+                book.layoutType == PublicationLayoutType.REFLOWABLE &&
+                canNavigateBackInBook &&
+                !isActiveReaderHudVisible,
+            enter = if (preferences.enablePageAnimations) fadeIn() + scaleIn(initialScale = 0.88f) else EnterTransition.None,
+            exit = if (preferences.enablePageAnimations) fadeOut() + scaleOut(targetScale = 0.88f) else ExitTransition.None,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = 18.dp, bottom = 12.dp)
+        ) {
+            val backPillBg = if (isDarkReaderSurface) {
+                Color(0xFF27272A).copy(alpha = 0.86f)
+            } else {
+                Color(0xFFE4E4E7).copy(alpha = 0.88f)
+            }
+            val backPillBorder = if (isDarkReaderSurface) {
+                Color.White.copy(alpha = 0.12f)
+            } else {
+                Color.Black.copy(alpha = 0.10f)
+            }
+            val backIconColor = if (isDarkReaderSurface) {
+                Color(0xFFF4F4F5)
+            } else {
+                Color(0xFF18181B)
+            }
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(backPillBg)
+                    .border(1.dp, backPillBorder, CircleShape)
+                    .clickable {
+                        readiumNavigator.goBackInBook()
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Canvas(modifier = Modifier.size(18.dp)) {
+                    val strokeW = 2.dp.toPx()
+                    val strokeStyle = Stroke(
+                        width = strokeW,
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round
+                    )
+                    // Curved return arrow (↩)
+                    val shaftPath = Path().apply {
+                        moveTo(size.width * 0.22f, size.height * 0.36f)
+                        lineTo(size.width * 0.62f, size.height * 0.36f)
+                        cubicTo(
+                            size.width * 0.86f, size.height * 0.36f,
+                            size.width * 0.86f, size.height * 0.78f,
+                            size.width * 0.58f, size.height * 0.78f
+                        )
+                        lineTo(size.width * 0.36f, size.height * 0.78f)
+                    }
+                    val headPath = Path().apply {
+                        moveTo(size.width * 0.40f, size.height * 0.18f)
+                        lineTo(size.width * 0.18f, size.height * 0.36f)
+                        lineTo(size.width * 0.40f, size.height * 0.54f)
+                    }
+                    drawPath(shaftPath, color = backIconColor, style = strokeStyle)
+                    drawPath(headPath, color = backIconColor, style = strokeStyle)
+                }
             }
         }
 
@@ -1859,7 +2065,29 @@ fun BookReaderScreen(
                     }
 
                     val hasTocEntries = if (isFixedLayout) pdfTocEntries.isNotEmpty() else reflowableTocEntries.isNotEmpty()
-                    if (!hasTocEntries) {
+                    val isTocLoading = if (isFixedLayout) !isPdfDocumentReady else reflowableTocState.isLoading
+                    if (isTocLoading && !hasTocEntries) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 32.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(24.dp),
+                                strokeWidth = 2.5.dp,
+                                color = palette.textPrimary,
+                                trackColor = palette.borderSubtle
+                            )
+                            Text(
+                                text = "Loading table of contents...",
+                                fontSize = 13.5.sp,
+                                color = palette.textMuted,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    } else if (!hasTocEntries) {
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -2983,13 +3211,17 @@ private fun SideEffectOrUpdateNavigatorCallbacks(
     onLocatorUpdated: (charOffset: Int, currentPosition: Int, totalPositions: Int, visibleText: String) -> Unit,
     onSingleTapToggleHud: () -> Unit,
     onUserManualNavigation: () -> Unit = {},
-    onWordDoubleTap: (charOffset: Int, wordText: String) -> Unit = { _, _ -> }
+    onWordDoubleTap: (charOffset: Int, wordText: String) -> Unit = { _, _ -> },
+    onLinkHistoryChanged: (canGoBack: Boolean) -> Unit = {},
+    onExternalLinkClicked: (url: String) -> Unit = {}
 ) {
     val latestOnInitialRestored by rememberUpdatedState(onInitialPositionRestored)
     val latestOnLocatorUpdated by rememberUpdatedState(onLocatorUpdated)
     val latestOnSingleTap by rememberUpdatedState(onSingleTapToggleHud)
     val latestOnManualNav by rememberUpdatedState(onUserManualNavigation)
     val latestOnWordDoubleTap by rememberUpdatedState(onWordDoubleTap)
+    val latestOnLinkHistoryChanged by rememberUpdatedState(onLinkHistoryChanged)
+    val latestOnExternalLinkClicked by rememberUpdatedState(onExternalLinkClicked)
 
     DisposableEffect(navigator) {
         navigator.onInitialPositionRestored = { latestOnInitialRestored() }
@@ -3001,12 +3233,20 @@ private fun SideEffectOrUpdateNavigatorCallbacks(
         navigator.onWordDoubleTap = { offset, word ->
             latestOnWordDoubleTap(offset, word)
         }
+        navigator.onLinkHistoryChanged = { canGoBack ->
+            latestOnLinkHistoryChanged(canGoBack)
+        }
+        navigator.onExternalLinkClicked = { url ->
+            latestOnExternalLinkClicked(url)
+        }
         onDispose {
             navigator.onInitialPositionRestored = null
             navigator.onLocatorUpdated = null
             navigator.onSingleTapToggleHud = null
             navigator.onUserManualNavigation = null
             navigator.onWordDoubleTap = null
+            navigator.onLinkHistoryChanged = null
+            navigator.onExternalLinkClicked = null
         }
     }
 }

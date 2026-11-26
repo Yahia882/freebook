@@ -12,14 +12,17 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -84,6 +87,8 @@ fun TtsModelPickerSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .navigationBarsPadding()
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -235,8 +240,9 @@ fun TtsVoicePickerSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .navigationBarsPadding()
                 .padding(horizontal = 20.dp)
-                .padding(bottom = 28.dp)
+                .padding(bottom = 20.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -305,7 +311,7 @@ fun TtsVoicePickerSheet(
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 420.dp),
+                        .weight(1f, fill = false),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     contentPadding = PaddingValues(vertical = 4.dp)
                 ) {
@@ -525,6 +531,8 @@ fun SleepTimerSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .navigationBarsPadding()
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -638,11 +646,14 @@ fun AudiobookManagerSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .navigationBarsPadding()
                 .padding(horizontal = 18.dp)
-                .padding(bottom = 26.dp)
         ) {
+            // Compact pinned header (title + Auto-Sync toggle)
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 10.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -688,160 +699,161 @@ fun AudiobookManagerSheet(
                 }
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Primary action pills
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Button(
-                    onClick = onImportAudioFiles,
-                    modifier = Modifier.weight(1.2f),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = palette.textPrimary,
-                        contentColor = palette.appBackground
-                    )
-                ) {
-                    Text("+ Import Audio", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                }
-
-                OutlinedButton(
-                    onClick = {
-                        newGroupTitle = "Chapter ${audiobookState.groups.size + 1}"
-                        showCreateGroupDialog = true
-                    },
-                    modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
-                ) {
-                    Text("+ Category", fontSize = 12.sp, maxLines = 1)
-                }
-
-                OutlinedButton(
-                    onClick = onAutoMatchChapters,
-                    enabled = audiobookState.groups.isNotEmpty() && bookChapters.isNotEmpty(),
-                    modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
-                ) {
-                    Text("Auto-Match", fontSize = 12.sp, maxLines = 1)
-                }
-            }
-
-            if (audiobookState.hasAudio) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = onCalibrateSyncHere,
-                        modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                    ) {
-                        Text("1-Tap Sync Here (Anchor)", fontSize = 12.sp, maxLines = 1)
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Free Tier Local Word Highlighting Pack (On-Demand Download) + Phase 3 Cloud note
-            Box(
+            // Unified scrollable body so the entire sheet (actions, ONNX pack card, and all chapters/tracks)
+            // scrolls smoothly from anywhere on screen without getting clipped or trapped by a fixed header.
+            LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(palette.surfaceColor)
-                    .border(1.dp, palette.borderSubtle, RoundedCornerShape(14.dp))
-                    .padding(12.dp)
+                    .weight(1f, fill = false),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = PaddingValues(bottom = 28.dp)
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Row(
+                item(key = "actions_bar", contentType = "actions") {
+                    Column(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text(
-                            text = "Word Highlighting Pack (Free · Local ONNX)",
-                            fontSize = 12.5.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = palette.textPrimary
-                        )
-                        Text(
-                            text = if (audiobookState.isLocalPackInstalled) "Installed" else "Optional",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = if (audiobookState.isLocalPackInstalled) Color(0xFF22C55E) else palette.textMuted
-                        )
-                    }
-
-                    val dlPct = audiobookState.localPackDownloadProgress
-                    if (dlPct != null) {
-                        LinearProgressIndicator(
-                            progress = { (dlPct / 100f).coerceIn(0f, 1f) },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Text(
-                            text = "Downloading Meta MMS-300M-FA pack ($dlPct%)...",
-                            fontSize = 11.5.sp,
-                            color = palette.textSecondary
-                        )
-                    } else if (audiobookState.isLocalPackInstalled) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text(
-                                text = "Ready for offline word sync (Arabic, English & 1,000+ languages).",
-                                fontSize = 11.5.sp,
-                                color = palette.textSecondary,
-                                modifier = Modifier.weight(1f)
-                            )
-                            TextButton(onClick = onDeleteLocalPack) {
-                                Text("Remove", fontSize = 11.5.sp, color = Color(0xFFEF4444))
+                            Button(
+                                onClick = onImportAudioFiles,
+                                modifier = Modifier.weight(1.2f),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = palette.textPrimary,
+                                    contentColor = palette.appBackground
+                                )
+                            ) {
+                                Text("+ Import Audio", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    newGroupTitle = "Chapter ${audiobookState.groups.size + 1}"
+                                    showCreateGroupDialog = true
+                                },
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                            ) {
+                                Text("+ Category", fontSize = 12.sp, maxLines = 1)
+                            }
+
+                            OutlinedButton(
+                                onClick = onAutoMatchChapters,
+                                enabled = audiobookState.groups.isNotEmpty() && bookChapters.isNotEmpty(),
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                            ) {
+                                Text("Auto-Match", fontSize = 12.sp, maxLines = 1)
                             }
                         }
-                    } else {
-                        Text(
-                            text = "Instant Sync works right now with 0 MB download. Download MMS-300M-FA (~95 MB) on demand for offline word-level highlighting.",
-                            fontSize = 11.5.sp,
-                            color = palette.textSecondary
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            TextButton(onClick = onDownloadLocalPack) {
-                                Text("Download Pack", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                            }
-                            TextButton(onClick = onImportLocalPackFile) {
-                                Text("Import .onnx", fontSize = 12.sp)
+
+                        if (audiobookState.hasAudio) {
+                            OutlinedButton(
+                                onClick = onCalibrateSyncHere,
+                                modifier = Modifier.fillMaxWidth(),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Text("1-Tap Sync Here (Anchor)", fontSize = 12.sp, maxLines = 1)
                             }
                         }
                     }
                 }
-            }
 
-            Spacer(modifier = Modifier.height(10.dp))
+                item(key = "local_pack_card", contentType = "pack") {
+                    // Free Tier Local Word Highlighting Pack (On-Demand Download) + Phase 3 Cloud note
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(palette.surfaceColor)
+                            .border(1.dp, palette.borderSubtle, RoundedCornerShape(14.dp))
+                            .padding(12.dp)
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Word Highlighting Pack (Free · Local ONNX)",
+                                    fontSize = 12.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = palette.textPrimary
+                                )
+                                Text(
+                                    text = if (audiobookState.isLocalPackInstalled) "Installed" else "Optional",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (audiobookState.isLocalPackInstalled) Color(0xFF22C55E) else palette.textMuted
+                                )
+                            }
 
-            if (audiobookState.groups.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 24.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "No audiobook files imported for this book yet.\nTap \"+ Import Audio\" to select one or multiple MP3 / M4B / M4A files.",
-                        fontSize = 13.sp,
-                        color = palette.textMuted
-                    )
+                            val dlPct = audiobookState.localPackDownloadProgress
+                            if (dlPct != null) {
+                                LinearProgressIndicator(
+                                    progress = { (dlPct / 100f).coerceIn(0f, 1f) },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Text(
+                                    text = "Downloading Meta MMS-300M-FA pack ($dlPct%)...",
+                                    fontSize = 11.5.sp,
+                                    color = palette.textSecondary
+                                )
+                            } else if (audiobookState.isLocalPackInstalled) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Ready for offline word sync (Arabic, English & 1,000+ languages).",
+                                        fontSize = 11.5.sp,
+                                        color = palette.textSecondary,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    TextButton(onClick = onDeleteLocalPack) {
+                                        Text("Remove", fontSize = 11.5.sp, color = Color(0xFFEF4444))
+                                    }
+                                }
+                            } else {
+                                Text(
+                                    text = "Instant Sync works right now with 0 MB download. Download MMS-300M-FA (~95 MB) on demand for offline word-level highlighting.",
+                                    fontSize = 11.5.sp,
+                                    color = palette.textSecondary
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    TextButton(onClick = onDownloadLocalPack) {
+                                        Text("Download Pack", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                    }
+                                    TextButton(onClick = onImportLocalPackFile) {
+                                        Text("Import .onnx", fontSize = 12.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-            } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 360.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
+
+                if (audiobookState.groups.isEmpty()) {
+                    item(key = "empty_audio_state", contentType = "empty") {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 24.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "No audiobook files imported for this book yet.\nTap \"+ Import Audio\" to select one or multiple MP3 / M4B / M4A files.",
+                                fontSize = 13.sp,
+                                color = palette.textMuted
+                            )
+                        }
+                    }
+                } else {
                     items(
                         items = audiobookState.groups,
                         key = { it.id },
@@ -948,8 +960,17 @@ fun AudiobookManagerSheet(
             containerColor = palette.menuSurface,
             title = { Text("Move \"${track.title}\"", fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    for (grp in audiobookState.groups) {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 320.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    items(
+                        items = audiobookState.groups,
+                        key = { it.id },
+                        contentType = { "move_target" }
+                    ) { grp ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
