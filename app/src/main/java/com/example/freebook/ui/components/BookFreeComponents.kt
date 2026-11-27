@@ -52,6 +52,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
@@ -1027,20 +1028,23 @@ fun ChevronIcon(
     expanded: Boolean,
     size: Dp = 16.dp
 ) {
-    Canvas(modifier = Modifier.size(size)) {
+    val rotation by animateFloatAsState(
+        targetValue = if (expanded) 90f else 0f,
+        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+        label = "chevron_rotation"
+    )
+    Canvas(
+        modifier = Modifier
+            .size(size)
+            .graphicsLayer { rotationZ = rotation }
+    ) {
         val stroke = 1.8.dp.toPx()
         val w = this.size.width
         val h = this.size.height
         val path = Path().apply {
-            if (expanded) {
-                moveTo(w * 0.24f, h * 0.36f)
-                lineTo(w * 0.50f, h * 0.64f)
-                lineTo(w * 0.76f, h * 0.36f)
-            } else {
-                moveTo(w * 0.36f, h * 0.24f)
-                lineTo(w * 0.64f, h * 0.50f)
-                lineTo(w * 0.36f, h * 0.76f)
-            }
+            moveTo(w * 0.36f, h * 0.24f)
+            lineTo(w * 0.64f, h * 0.50f)
+            lineTo(w * 0.36f, h * 0.76f)
         }
         drawPath(
             path = path,

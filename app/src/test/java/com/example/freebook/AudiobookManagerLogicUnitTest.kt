@@ -7,7 +7,9 @@ import com.example.freebook.model.AudiobookGroup
 import com.example.freebook.model.AudiobookMappingResolver
 import com.example.freebook.model.AudiobookTrack
 import com.example.freebook.ui.reader.AudiobookListRow
+import com.example.freebook.ui.reader.AudiobookNormalSection
 import com.example.freebook.ui.reader.buildAudiobookListRows
+import com.example.freebook.ui.reader.buildAudiobookNormalSections
 import com.example.freebook.ui.reader.extractReorderedEntries
 import com.example.freebook.ui.reader.formatChapterDisplayTitle
 import com.example.freebook.ui.reader.formatChapterTimestamp
@@ -174,5 +176,43 @@ class AudiobookManagerLogicUnitTest {
 
         assertEquals("1 - Chapters 1 - 4", formatChapterDisplayTitle(1, "Chapters 1 - 4"))
         assertEquals("1 - Chapters 1 - 4", formatChapterDisplayTitle(1, "1 - Chapters 1 - 4"))
+    }
+
+    @Test
+    fun normalSections_keepCategoryTracksGroupedEvenWhenCollapsedForSmoothExpansion() {
+        val collapsedCat = AudiobookGroup(
+            id = "cat1",
+            bookId = "b1",
+            title = "Part 1",
+            orderIndex = 0,
+            isCategory = true,
+            isCollapsed = true
+        )
+        val standalone = AudiobookGroup(
+            id = "g2",
+            bookId = "b1",
+            title = "Bonus",
+            orderIndex = 1,
+            isCategory = false
+        )
+        val t1 = AudiobookTrack(id = "t1", bookId = "b1", groupId = "cat1", sourceUri = "u1", title = "Track 1", durationMs = 60_000L, orderIndex = 0)
+        val t2 = AudiobookTrack(id = "t2", bookId = "b1", groupId = "cat1", sourceUri = "u2", title = "Track 2", durationMs = 90_000L, orderIndex = 1)
+        val t3 = AudiobookTrack(id = "t3", bookId = "b1", groupId = "g2", sourceUri = "u3", title = "Bonus", durationMs = 30_000L, orderIndex = 2)
+
+        val sections = buildAudiobookNormalSections(
+            groups = listOf(collapsedCat, standalone),
+            tracks = listOf(t1, t2, t3)
+        )
+        assertEquals(2, sections.size)
+
+        val catSection = sections[0] as AudiobookNormalSection.CategoryBlock
+        assertEquals("cat_cat1", catSection.stableKey)
+        assertTrue(catSection.group.isCollapsed)
+        assertEquals(listOf("t1", "t2"), catSection.tracks.map { it.id })
+        assertEquals(150_000L, catSection.totalDurationMs)
+
+        val standaloneSection = sections[1] as AudiobookNormalSection.StandaloneTrack
+        assertEquals("track_t3", standaloneSection.stableKey)
+        assertEquals("t3", standaloneSection.track.id)
     }
 }

@@ -51,6 +51,52 @@ internal sealed interface AudiobookListRow {
     }
 }
 
+/**
+ * Grouped section model used in normal browsing mode so each Category can smoothly animate
+ * its embedded sub-files expanding/collapsing downward beneath its anchored header.
+ */
+internal sealed interface AudiobookNormalSection {
+    val stableKey: String
+
+    data class StandaloneTrack(
+        val group: AudiobookGroup,
+        val track: AudiobookTrack
+    ) : AudiobookNormalSection {
+        override val stableKey: String get() = "track_${track.id}"
+    }
+
+    data class CategoryBlock(
+        val group: AudiobookGroup,
+        val tracks: List<AudiobookTrack>,
+        val totalDurationMs: Long
+    ) : AudiobookNormalSection {
+        override val stableKey: String get() = "cat_${group.id}"
+    }
+}
+
+internal fun buildAudiobookNormalSections(
+    groups: List<AudiobookGroup>,
+    tracks: List<AudiobookTrack>
+): List<AudiobookNormalSection> {
+    val tracksByGroup = tracks.groupBy { it.groupId }
+    return groups.map { group ->
+        val groupTracks = tracksByGroup[group.id].orEmpty()
+        val displayAsCategory = group.isCategory || groupTracks.size != 1
+        if (!displayAsCategory) {
+            AudiobookNormalSection.StandaloneTrack(
+                group = group,
+                track = groupTracks.first()
+            )
+        } else {
+            AudiobookNormalSection.CategoryBlock(
+                group = group,
+                tracks = groupTracks,
+                totalDurationMs = groupTracks.sumOf { it.effectiveDurationMs }
+            )
+        }
+    }
+}
+
 internal data class ResolvedChapterRange(
     val startIndex: Int,
     val endIndex: Int,

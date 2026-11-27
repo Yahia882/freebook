@@ -1,5 +1,13 @@
 package com.example.freebook.ui.reader
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -14,6 +22,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -48,6 +58,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -75,7 +86,6 @@ import androidx.compose.ui.zIndex
 import com.example.freebook.audio.playback.ReorderedAudioEntry
 import com.example.freebook.audio.sync.AudiobookSyncController
 import com.example.freebook.audio.sync.SyncChapter
-import com.example.freebook.model.AlignmentProvider
 import com.example.freebook.model.AlignmentStatus
 import com.example.freebook.model.AudiobookChapterMapping
 import com.example.freebook.model.AudiobookGroup
@@ -85,10 +95,9 @@ import com.example.freebook.model.AudiobookUiState
 import com.example.freebook.model.TtsModelDescriptor
 import com.example.freebook.model.TtsUiState
 import com.example.freebook.model.TtsVoiceInfo
-import com.example.freebook.ui.components.AudioWaveformIcon
 import com.example.freebook.ui.components.ChevronIcon
 import com.example.freebook.ui.components.DragGripDotsIcon
-import com.example.freebook.ui.components.MenuBarsIcon
+import com.example.freebook.ui.components.MoreDotsIcon
 import com.example.freebook.ui.components.PlusIcon
 import com.example.freebook.ui.theme.BookFreePalette
 import com.example.freebook.ui.theme.LocalBookFreePalette
@@ -98,16 +107,22 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 private val BookFreePalette.audioAccent: Color
-    get() = if (isDark) Color(0xFF7DD3FC) else Color(0xFF0284C7)
+    get() = if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
 
 private val BookFreePalette.onAudioAccent: Color
     get() = if (isDark) Color(0xFF0B1219) else Color.White
+
+private val BookFreePalette.chaptersSheetSurface: Color
+    get() = if (isDark) Color(0xFF121214) else Color(0xFFFFFFFF)
+
+private val BookFreePalette.chaptersActiveCardBg: Color
+    get() = if (isDark) Color.White.copy(alpha = 0.06f) else Color.Black.copy(alpha = 0.05f)
 
 private val BookFreePalette.sheetDividerColor: Color
     get() = if (isDark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.08f)
 
 private val BookFreePalette.sheetDropdownSurface: Color
-    get() = if (isDark) Color(0xFF26262B) else Color(0xFFFFFFFF)
+    get() = if (isDark) Color(0xFF1C1C20) else Color(0xFFFFFFFF)
 
 @Composable
 private fun MinimalSheetDragHandle() {
@@ -679,11 +694,12 @@ private sealed interface RenameSheetTarget {
 }
 
 /**
- * Clean, distraction-free Audiobook Chapters sheet modeled after minimalist editorial chapter lists:
- * - Left-aligned "Chapters" title with "Import Audio" button + overflow menu (Auto-Sync, Add Category,
- *   Sync Anchor, Auto-Match, Word Highlighting Pack sheet).
- * - Flat hairline-separated chapter rows displaying Start/Duration, blue active checkmark, and a
- *   per-chapter options menu (Map to Content with range handles, Align Words, Reorder/Move, Rename, Delete).
+ * Minimalist Audiobook Chapters sheet modeled after the Stitch "Chapters List Screen (Minimalist)" design:
+ * - Left-aligned bold "Chapters" title with matching "+" (Import Audio) and "⋮" overflow menu
+ *   (Auto-Sync, Add Category, Sync Anchor, Auto-Match, Word Highlighting Pack, Reorder Chapters).
+ * - Divider-free, mapping-free single-line rows (Title + compact duration + "⋮" menu) with a subtle
+ *   elevated rounded pill for the active track. All mapping details are kept inside "Edit Mapping" /
+ *   "Map to Content" via each row's or category's "⋮" menu.
  * - Interactive drag-to-reorder across top-level chapters and embedded categories.
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -769,6 +785,12 @@ fun AudiobookManagerSheet(
             isReorderMode = isReorderMode
         )
     }
+    val normalSections = remember(audiobookState.groups, audiobookState.tracks) {
+        buildAudiobookNormalSections(
+            groups = audiobookState.groups,
+            tracks = audiobookState.tracks
+        )
+    }
 
     var reorderRows by remember { mutableStateOf(computedRows) }
     var draggingKey by remember { mutableStateOf<String?>(null) }
@@ -782,6 +804,7 @@ fun AudiobookManagerSheet(
     }
 
     val displayedRows = if (isReorderMode) reorderRows else computedRows
+    val isListEmpty = if (isReorderMode) displayedRows.isEmpty() else normalSections.isEmpty()
     val listState = rememberLazyListState()
     val categoryDragStepPx = with(density) { 52.dp.toPx() }
     val autoScrollEdgePx = with(density) { 48.dp.toPx() }
@@ -801,41 +824,43 @@ fun AudiobookManagerSheet(
                 onDismiss()
             }
         },
+        modifier = Modifier.fillMaxHeight(0.92f),
         sheetState = sheetState,
         shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-        containerColor = palette.menuSurface,
+        containerColor = palette.chaptersSheetSurface,
         contentColor = palette.textPrimary,
         tonalElevation = 0.dp,
         dragHandle = { MinimalSheetDragHandle() }
     ) {
         Column(
             modifier = Modifier
-                .fillMaxWidth()
+                .fillMaxSize()
                 .navigationBarsPadding()
         ) {
             // =================================================================
-            // ULTRA-MINIMAL HEADER: "Chapters" on left, matching "+" & bar icon on right
+            // STITCH MINIMALIST HEADER: Bold "Chapters" on left, "+" & "⋮" on right
             // =================================================================
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp)
-                    .padding(top = 2.dp, bottom = 14.dp),
+                    .padding(horizontal = 24.dp)
+                    .padding(top = 2.dp, bottom = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 if (isReorderMode) {
                     Text(
                         text = "Reorder",
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = (-0.5).sp,
                         color = palette.textPrimary
                     )
 
                     Box(
                         modifier = Modifier
                             .clip(CircleShape)
-                            .background(palette.audioAccent.copy(alpha = 0.18f))
+                            .background(palette.audioAccent.copy(alpha = 0.16f))
                             .clickable {
                                 isReorderMode = false
                                 draggingKey = null
@@ -854,43 +879,45 @@ fun AudiobookManagerSheet(
                 } else {
                     Text(
                         text = "Chapters",
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = palette.textPrimary,
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = (-0.5).sp,
+                        color = if (palette.isDark) Color.White.copy(alpha = 0.95f) else palette.textPrimary,
                         maxLines = 1
                     )
 
-                    val headerIconColor = palette.textPrimary.copy(alpha = 0.88f)
+                    val headerIconColor = if (palette.isDark) Color(0xFFD4D4D8) else palette.textSecondary
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        // Add / Import Audio icon button (exact same size & color as menu bar icon)
+                        // Add / Import Audio icon button (exact same size & color as overflow icon)
                         Box(
                             modifier = Modifier
-                                .size(36.dp)
+                                .size(40.dp)
                                 .clip(CircleShape)
                                 .clickable { onImportAudioFiles(null) },
                             contentAlignment = Alignment.Center
                         ) {
                             PlusIcon(
                                 color = headerIconColor,
-                                size = 18.dp
+                                size = 20.dp
                             )
                         }
 
-                        // Header Bar Menu icon button (Auto-Sync, Add Category, Anchor, Auto-Match, Word Pack)
+                        // Header More Options button (three vertical dots matching Stitch design)
                         Box {
                             Box(
                                 modifier = Modifier
-                                    .size(36.dp)
+                                    .size(40.dp)
                                     .clip(CircleShape)
                                     .clickable { showHeaderMenu = true },
                                 contentAlignment = Alignment.Center
                             ) {
-                                MenuBarsIcon(
+                                MoreDotsIcon(
                                     color = headerIconColor,
-                                    size = 18.dp
+                                    vertical = true,
+                                    size = 20.dp
                                 )
                             }
 
@@ -1053,127 +1080,273 @@ fun AudiobookManagerSheet(
                 }
             }
 
-            HorizontalDivider(thickness = 0.5.dp, color = palette.sheetDividerColor)
-
             // =================================================================
-            // CHAPTERS LIST (Ultra-minimalist flat rows + hairline dividers)
+            // STITCH CHAPTERS LIST (Fixed near-full height, downward category reveal)
             // =================================================================
-            if (displayedRows.isEmpty()) {
-                Column(
+            if (isListEmpty) {
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 28.dp, vertical = 42.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        text = "No audio chapters",
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = palette.textPrimary
-                    )
-                    Text(
-                        text = "Tap + to import audio files for this book.",
-                        fontSize = 13.sp,
-                        color = palette.textMuted,
-                        textAlign = TextAlign.Center
-                    )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 28.dp)
+                            .padding(bottom = 56.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "No audio chapters",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = palette.textPrimary
+                        )
+                        Text(
+                            text = "Tap + to import audio files for this book.",
+                            fontSize = 13.sp,
+                            color = palette.textMuted,
+                            textAlign = TextAlign.Center
+                        )
+                    }
                 }
             } else {
                 LazyColumn(
                     state = listState,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f, fill = false),
-                    contentPadding = PaddingValues(bottom = 28.dp)
+                        .weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    contentPadding = PaddingValues(
+                        start = 16.dp,
+                        end = 16.dp,
+                        top = 4.dp,
+                        bottom = 28.dp
+                    )
                 ) {
-                    itemsIndexed(
-                        items = displayedRows,
-                        key = { _, row -> row.stableKey },
-                        contentType = { _, row ->
-                            when (row) {
-                                is AudiobookListRow.StandaloneTrack,
-                                is AudiobookListRow.CategoryTrack -> "audio_track"
-                                is AudiobookListRow.CategoryHeader -> "category_header"
-                                is AudiobookListRow.EmptyCategoryPlaceholder -> "empty_category"
-                                is AudiobookListRow.CategoryEndMarker -> "category_end"
+                    if (!isReorderMode) {
+                        items(
+                            items = normalSections,
+                            key = { section -> section.stableKey },
+                            contentType = { section ->
+                                when (section) {
+                                    is AudiobookNormalSection.StandaloneTrack -> "audio_track"
+                                    is AudiobookNormalSection.CategoryBlock -> "category_block"
+                                }
+                            }
+                        ) { section ->
+                            when (section) {
+                                is AudiobookNormalSection.StandaloneTrack -> {
+                                    AudiobookBoundTrackRow(
+                                        group = section.group,
+                                        track = section.track,
+                                        isEmbedded = false,
+                                        isReorderMode = false,
+                                        audiobookState = audiobookState,
+                                        groupMappingsByGroupId = groupMappingsByGroupId,
+                                        trackMappingsByTrackId = trackMappingsByTrackId,
+                                        rowModifier = Modifier,
+                                        dragHandleModifier = Modifier,
+                                        onPlayTrack = onPlayTrack,
+                                        onLongPressEnterReorder = {
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            isReorderMode = true
+                                        },
+                                        onOpenMapping = { target -> mappingTarget = target },
+                                        onAlignChapterLocal = onAlignChapterLocal,
+                                        onOpenWordPackSheet = { showWordPackSheet = true },
+                                        onEnterReorder = { isReorderMode = true },
+                                        onRenameTrack = { tr ->
+                                            renameTarget = RenameSheetTarget.Track(tr)
+                                            renameText = tr.title
+                                        },
+                                        onDeleteTrack = onDeleteTrack
+                                    )
+                                }
+
+                                is AudiobookNormalSection.CategoryBlock -> {
+                                    val catMapping = groupMappingsByGroupId[section.group.id]
+                                    val catAlignment = catMapping?.let { audiobookState.alignments[it.id] }
+                                    val containsActiveTrack = audiobookState.activeGroupId == section.group.id
+
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        CleanCategoryHeaderRow(
+                                            group = section.group,
+                                            totalDurationMs = section.totalDurationMs,
+                                            alignmentStatus = catAlignment?.status ?: AlignmentStatus.NONE,
+                                            isActiveCollapsed = section.group.isCollapsed && containsActiveTrack,
+                                            isReorderMode = false,
+                                            isLocalPackInstalled = audiobookState.isLocalPackInstalled,
+                                            hasCategoryMapping = catMapping != null,
+                                            rowModifier = Modifier,
+                                            dragHandleModifier = Modifier,
+                                            onToggleCollapse = {
+                                                onToggleGroupCollapsed(section.group.id, !section.group.isCollapsed)
+                                            },
+                                            onMapCategory = {
+                                                mappingTarget = MappingSheetTarget.CategoryTarget(
+                                                    group = section.group,
+                                                    trackCount = section.tracks.size
+                                                )
+                                            },
+                                            onAlignCategory = {
+                                                if (catMapping != null) {
+                                                    if (audiobookState.isLocalPackInstalled) {
+                                                        onAlignChapterLocal(catMapping.id)
+                                                    } else {
+                                                        showWordPackSheet = true
+                                                    }
+                                                }
+                                            },
+                                            onImportIntoCategory = { onImportAudioFiles(section.group.id) },
+                                            onReorder = { isReorderMode = true },
+                                            onRename = {
+                                                renameTarget = RenameSheetTarget.Category(section.group)
+                                                renameText = section.group.title
+                                            },
+                                            onDelete = {
+                                                if (section.tracks.isNotEmpty()) {
+                                                    deleteConfirmCategory = section.group to section.tracks.size
+                                                } else {
+                                                    onDeleteGroup(section.group.id)
+                                                }
+                                            }
+                                        )
+
+                                        AnimatedVisibility(
+                                            visible = !section.group.isCollapsed,
+                                            enter = expandVertically(
+                                                animationSpec = tween(
+                                                    durationMillis = 240,
+                                                    easing = FastOutSlowInEasing
+                                                ),
+                                                expandFrom = Alignment.Top
+                                            ) + fadeIn(
+                                                animationSpec = tween(
+                                                    durationMillis = 200,
+                                                    easing = FastOutSlowInEasing
+                                                )
+                                            ),
+                                            exit = shrinkVertically(
+                                                animationSpec = tween(
+                                                    durationMillis = 200,
+                                                    easing = FastOutSlowInEasing
+                                                ),
+                                                shrinkTowards = Alignment.Top
+                                            ) + fadeOut(
+                                                animationSpec = tween(
+                                                    durationMillis = 150,
+                                                    easing = FastOutSlowInEasing
+                                                )
+                                            )
+                                        ) {
+                                            Column(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(top = 4.dp),
+                                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                if (section.tracks.isEmpty()) {
+                                                    EmptyCategoryPlaceholderRow(
+                                                        groupTitle = section.group.title,
+                                                        isReorderMode = false,
+                                                        onClick = { onImportAudioFiles(section.group.id) }
+                                                    )
+                                                } else {
+                                                    for (track in section.tracks) {
+                                                        key(track.id) {
+                                                            AudiobookBoundTrackRow(
+                                                                group = section.group,
+                                                                track = track,
+                                                                isEmbedded = true,
+                                                                isReorderMode = false,
+                                                                audiobookState = audiobookState,
+                                                                groupMappingsByGroupId = groupMappingsByGroupId,
+                                                                trackMappingsByTrackId = trackMappingsByTrackId,
+                                                                rowModifier = Modifier,
+                                                                dragHandleModifier = Modifier,
+                                                                onPlayTrack = onPlayTrack,
+                                                                onLongPressEnterReorder = {
+                                                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                                    isReorderMode = true
+                                                                },
+                                                                onOpenMapping = { target -> mappingTarget = target },
+                                                                onAlignChapterLocal = onAlignChapterLocal,
+                                                                onOpenWordPackSheet = { showWordPackSheet = true },
+                                                                onEnterReorder = { isReorderMode = true },
+                                                                onRenameTrack = { tr ->
+                                                                    renameTarget = RenameSheetTarget.Track(tr)
+                                                                    renameText = tr.title
+                                                                },
+                                                                onDeleteTrack = onDeleteTrack
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
-                    ) { _, row ->
-                        val isDraggingThis = draggingKey == row.stableKey
+                    } else {
+                        itemsIndexed(
+                            items = displayedRows,
+                            key = { _, row -> row.stableKey },
+                            contentType = { _, row ->
+                                when (row) {
+                                    is AudiobookListRow.StandaloneTrack,
+                                    is AudiobookListRow.CategoryTrack -> "audio_track"
+                                    is AudiobookListRow.CategoryHeader -> "category_header"
+                                    is AudiobookListRow.EmptyCategoryPlaceholder -> "empty_category"
+                                    is AudiobookListRow.CategoryEndMarker -> "category_end"
+                                }
+                            }
+                        ) { _, row ->
+                            val isDraggingThis = draggingKey == row.stableKey
 
-                        fun buildDragModifier(rowKey: String, isCategoryRow: Boolean): Modifier {
-                            if (!isReorderMode) return Modifier
-                            return Modifier.pointerInput(rowKey, isReorderMode) {
-                                detectDragGestures(
-                                    onDragStart = {
-                                        draggingKey = rowKey
-                                        dragOffsetY = 0f
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    },
-                                    onDragEnd = {
-                                        val finalRows = reorderRows
-                                        draggingKey = null
-                                        dragOffsetY = 0f
-                                        val entries = extractReorderedEntries(finalRows, latestCollapsedTracks)
-                                        latestOnApplyReorder(entries)
-                                    },
-                                    onDragCancel = {
-                                        draggingKey = null
-                                        dragOffsetY = 0f
-                                        reorderRows = latestComputedRows
-                                    },
-                                    onDrag = { change, dragAmount ->
-                                        change.consume()
-                                        if (draggingKey != rowKey) return@detectDragGestures
-                                        dragOffsetY += dragAmount.y
+                            fun buildDragModifier(rowKey: String, isCategoryRow: Boolean): Modifier {
+                                if (!isReorderMode) return Modifier
+                                return Modifier.pointerInput(rowKey, isReorderMode) {
+                                    detectDragGestures(
+                                        onDragStart = {
+                                            draggingKey = rowKey
+                                            dragOffsetY = 0f
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        },
+                                        onDragEnd = {
+                                            val finalRows = reorderRows
+                                            draggingKey = null
+                                            dragOffsetY = 0f
+                                            val entries = extractReorderedEntries(finalRows, latestCollapsedTracks)
+                                            latestOnApplyReorder(entries)
+                                        },
+                                        onDragCancel = {
+                                            draggingKey = null
+                                            dragOffsetY = 0f
+                                            reorderRows = latestComputedRows
+                                        },
+                                        onDrag = { change, dragAmount ->
+                                            change.consume()
+                                            if (draggingKey != rowKey) return@detectDragGestures
+                                            dragOffsetY += dragAmount.y
 
-                                        val currentIdx = reorderRows.indexOfFirst { it.stableKey == rowKey }
-                                        if (currentIdx < 0) return@detectDragGestures
+                                            val currentIdx = reorderRows.indexOfFirst { it.stableKey == rowKey }
+                                            if (currentIdx < 0) return@detectDragGestures
 
-                                        val visibleItems = listState.layoutInfo.visibleItemsInfo
-                                        val myInfo = visibleItems.firstOrNull { it.key == rowKey }
+                                            val visibleItems = listState.layoutInfo.visibleItemsInfo
+                                            val myInfo = visibleItems.firstOrNull { it.key == rowKey }
 
-                                        if (isCategoryRow) {
-                                            if (abs(dragOffsetY) >= categoryDragStepPx) {
-                                                val movingDown = dragOffsetY > 0f
-                                                val targetIdx = if (movingDown) {
-                                                    (currentIdx + 1).coerceAtMost(reorderRows.lastIndex)
-                                                } else {
-                                                    (currentIdx - 1).coerceAtLeast(0)
-                                                }
-                                                val (nextRows, newIdx) = moveRowInReorderList(
-                                                    rows = reorderRows,
-                                                    fromIndex = currentIdx,
-                                                    targetIndex = targetIdx,
-                                                    collapsedCategoryTracks = latestCollapsedTracks
-                                                )
-                                                if (newIdx != currentIdx) {
-                                                    reorderRows = nextRows
-                                                    dragOffsetY = 0f
-                                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                                }
-                                            }
-                                        } else if (myInfo != null) {
-                                            val draggedCenter = myInfo.offset + myInfo.size / 2f + dragOffsetY
-                                            val viewportStart = listState.layoutInfo.viewportStartOffset
-                                            val viewportEnd = listState.layoutInfo.viewportEndOffset
-                                            if (draggedCenter < viewportStart + autoScrollEdgePx) {
-                                                coroutineScope.launch { listState.scrollBy(-autoScrollStepPx) }
-                                            } else if (draggedCenter > viewportEnd - autoScrollEdgePx) {
-                                                coroutineScope.launch { listState.scrollBy(autoScrollStepPx) }
-                                            }
-
-                                            val targetInfo = visibleItems.firstOrNull { candidate ->
-                                                candidate.key != rowKey &&
-                                                    draggedCenter in candidate.offset.toFloat()..(candidate.offset + candidate.size).toFloat()
-                                            }
-                                            if (targetInfo != null) {
-                                                val targetIdx = targetInfo.index.coerceIn(0, reorderRows.lastIndex)
-                                                val movingDown = targetIdx > currentIdx && draggedCenter > targetInfo.offset + targetInfo.size * 0.45f
-                                                val movingUp = targetIdx < currentIdx && draggedCenter < targetInfo.offset + targetInfo.size * 0.55f
-                                                if (movingDown || movingUp) {
-                                                    val oldOffset = myInfo.offset
+                                            if (isCategoryRow) {
+                                                if (abs(dragOffsetY) >= categoryDragStepPx) {
+                                                    val movingDown = dragOffsetY > 0f
+                                                    val targetIdx = if (movingDown) {
+                                                        (currentIdx + 1).coerceAtMost(reorderRows.lastIndex)
+                                                    } else {
+                                                        (currentIdx - 1).coerceAtLeast(0)
+                                                    }
                                                     val (nextRows, newIdx) = moveRowInReorderList(
                                                         rows = reorderRows,
                                                         fromIndex = currentIdx,
@@ -1182,226 +1355,186 @@ fun AudiobookManagerSheet(
                                                     )
                                                     if (newIdx != currentIdx) {
                                                         reorderRows = nextRows
-                                                        dragOffsetY -= (targetInfo.offset - oldOffset).toFloat()
+                                                        dragOffsetY = 0f
                                                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                    }
+                                                }
+                                            } else if (myInfo != null) {
+                                                val draggedCenter = myInfo.offset + myInfo.size / 2f + dragOffsetY
+                                                val viewportStart = listState.layoutInfo.viewportStartOffset
+                                                val viewportEnd = listState.layoutInfo.viewportEndOffset
+                                                if (draggedCenter < viewportStart + autoScrollEdgePx) {
+                                                    coroutineScope.launch { listState.scrollBy(-autoScrollStepPx) }
+                                                } else if (draggedCenter > viewportEnd - autoScrollEdgePx) {
+                                                    coroutineScope.launch { listState.scrollBy(autoScrollStepPx) }
+                                                }
+
+                                                val targetInfo = visibleItems.firstOrNull { candidate ->
+                                                    candidate.key != rowKey &&
+                                                        draggedCenter in candidate.offset.toFloat()..(candidate.offset + candidate.size).toFloat()
+                                                }
+                                                if (targetInfo != null) {
+                                                    val targetIdx = targetInfo.index.coerceIn(0, reorderRows.lastIndex)
+                                                    val movingDown = targetIdx > currentIdx && draggedCenter > targetInfo.offset + targetInfo.size * 0.45f
+                                                    val movingUp = targetIdx < currentIdx && draggedCenter < targetInfo.offset + targetInfo.size * 0.55f
+                                                    if (movingDown || movingUp) {
+                                                        val oldOffset = myInfo.offset
+                                                        val (nextRows, newIdx) = moveRowInReorderList(
+                                                            rows = reorderRows,
+                                                            fromIndex = currentIdx,
+                                                            targetIndex = targetIdx,
+                                                            collapsedCategoryTracks = latestCollapsedTracks
+                                                        )
+                                                        if (newIdx != currentIdx) {
+                                                            reorderRows = nextRows
+                                                            dragOffsetY -= (targetInfo.offset - oldOffset).toFloat()
+                                                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                        }
                                                     }
                                                 }
                                             }
                                         }
+                                    )
+                                }
+                            }
+
+                            val liftModifier = Modifier
+                                .zIndex(if (isDraggingThis) 2f else 0f)
+                                .graphicsLayer {
+                                    if (isDraggingThis) {
+                                        translationY = dragOffsetY
+                                        scaleX = 1.015f
+                                        scaleY = 1.015f
+                                        shadowElevation = 18f
                                     }
-                                )
-                            }
-                        }
-
-                        val liftModifier = Modifier
-                            .zIndex(if (isDraggingThis) 2f else 0f)
-                            .graphicsLayer {
-                                if (isDraggingThis) {
-                                    translationY = dragOffsetY
-                                    scaleX = 1.015f
-                                    scaleY = 1.015f
-                                    shadowElevation = 18f
                                 }
-                            }
-                            .background(
-                                if (isDraggingThis) palette.textPrimary.copy(alpha = 0.08f) else Color.Transparent
-                            )
-
-                        when (row) {
-                            is AudiobookListRow.StandaloneTrack,
-                            is AudiobookListRow.CategoryTrack -> {
-                                val isEmbedded = row is AudiobookListRow.CategoryTrack
-                                val track = when (row) {
-                                    is AudiobookListRow.StandaloneTrack -> row.track
-                                    is AudiobookListRow.CategoryTrack -> row.track
-                                }
-                                val group = when (row) {
-                                    is AudiobookListRow.StandaloneTrack -> row.group
-                                    is AudiobookListRow.CategoryTrack -> row.group
-                                }
-                                val chapterNumber = when (row) {
-                                    is AudiobookListRow.StandaloneTrack -> row.chapterNumber
-                                    is AudiobookListRow.CategoryTrack -> row.chapterNumber
-                                }
-
-                                val parentCatMapping = if (isEmbedded) groupMappingsByGroupId[group.id] else null
-                                val ownTrackMapping = if (isEmbedded) {
-                                    trackMappingsByTrackId[track.id]
-                                } else {
-                                    AudiobookMappingResolver.resolveForTrack(track, audiobookState.mappings)
-                                }
-                                val effectiveMapping = parentCatMapping ?: ownTrackMapping
-                                val alignment = if (parentCatMapping == null) {
-                                    ownTrackMapping?.let { audiobookState.alignments[it.id] }
-                                } else {
-                                    null
-                                }
-                                val isActive = track.id == audiobookState.activeTrackId
-
-                                CleanChapterTrackRow(
-                                    displayTitle = formatChapterDisplayTitle(chapterNumber, track.title),
-                                    durationMs = track.effectiveDurationMs,
-                                    mappingLabel = if (parentCatMapping == null) {
-                                        ownTrackMapping?.let { buildMappingStatusLabel(it, isPdfBook) }
+                                .then(
+                                    if (isDraggingThis) {
+                                        Modifier
+                                            .clip(RoundedCornerShape(16.dp))
+                                            .background(palette.chaptersActiveCardBg)
                                     } else {
-                                        null
-                                    },
-                                    overriddenByCategoryTitle = if (parentCatMapping != null) group.title else null,
-                                    alignmentStatus = alignment?.status ?: AlignmentStatus.NONE,
-                                    alignmentProvider = alignment?.provider ?: AlignmentProvider.NONE,
-                                    alignmentProgress = alignment?.progressPercent ?: 0,
-                                    isActive = isActive,
-                                    isPlaying = audiobookState.isPlaying,
-                                    isEmbeddedInCategory = isEmbedded,
-                                    isReorderMode = isReorderMode,
-                                    isLocalPackInstalled = audiobookState.isLocalPackInstalled,
-                                    hasOwnMapping = parentCatMapping == null && ownTrackMapping != null,
-                                    rowModifier = liftModifier,
-                                    dragHandleModifier = buildDragModifier(row.stableKey, isCategoryRow = false),
-                                    onPlay = { onPlayTrack(track.id) },
-                                    onLongPressEnterReorder = {
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        isReorderMode = true
-                                    },
-                                    onMap = {
-                                        mappingTarget = MappingSheetTarget.TrackTarget(
-                                            group = group,
-                                            track = track,
-                                            parentCategoryOverride = parentCatMapping
-                                        )
-                                    },
-                                    onAlignWords = {
-                                        if (parentCatMapping == null && effectiveMapping != null) {
-                                            if (audiobookState.isLocalPackInstalled) {
-                                                onAlignChapterLocal(effectiveMapping.id)
-                                            } else {
-                                                showWordPackSheet = true
-                                            }
-                                        }
-                                    },
-                                    onReorder = { isReorderMode = true },
-                                    onRename = {
-                                        renameTarget = RenameSheetTarget.Track(track)
-                                        renameText = track.title
-                                    },
-                                    onDelete = { onDeleteTrack(track) }
-                                )
-                                HorizontalDivider(
-                                    modifier = Modifier.padding(
-                                        start = if (isEmbedded) 38.dp else 20.dp,
-                                        end = 20.dp
-                                    ),
-                                    thickness = 0.5.dp,
-                                    color = palette.sheetDividerColor
-                                )
-                            }
-
-                            is AudiobookListRow.CategoryHeader -> {
-                                val catMapping = groupMappingsByGroupId[row.group.id]
-                                val catAlignment = catMapping?.let { audiobookState.alignments[it.id] }
-                                val containsActiveTrack = audiobookState.activeGroupId == row.group.id
-
-                                CleanCategoryHeaderRow(
-                                    group = row.group,
-                                    totalDurationMs = row.totalDurationMs,
-                                    categoryMappingLabel = catMapping?.let { buildMappingStatusLabel(it, isPdfBook) },
-                                    alignmentStatus = catAlignment?.status ?: AlignmentStatus.NONE,
-                                    alignmentProgress = catAlignment?.progressPercent ?: 0,
-                                    showActiveWaveform = row.group.isCollapsed && containsActiveTrack,
-                                    isPlaying = audiobookState.isPlaying,
-                                    isReorderMode = isReorderMode,
-                                    isLocalPackInstalled = audiobookState.isLocalPackInstalled,
-                                    hasCategoryMapping = catMapping != null,
-                                    rowModifier = liftModifier,
-                                    dragHandleModifier = buildDragModifier(row.stableKey, isCategoryRow = true),
-                                    onToggleCollapse = {
-                                        onToggleGroupCollapsed(row.group.id, !row.group.isCollapsed)
-                                    },
-                                    onMapCategory = {
-                                        mappingTarget = MappingSheetTarget.CategoryTarget(
-                                            group = row.group,
-                                            trackCount = row.trackCount
-                                        )
-                                    },
-                                    onAlignCategory = {
-                                        if (catMapping != null) {
-                                            if (audiobookState.isLocalPackInstalled) {
-                                                onAlignChapterLocal(catMapping.id)
-                                            } else {
-                                                showWordPackSheet = true
-                                            }
-                                        }
-                                    },
-                                    onImportIntoCategory = { onImportAudioFiles(row.group.id) },
-                                    onReorder = { isReorderMode = true },
-                                    onRename = {
-                                        renameTarget = RenameSheetTarget.Category(row.group)
-                                        renameText = row.group.title
-                                    },
-                                    onDelete = {
-                                        if (row.trackCount > 0) {
-                                            deleteConfirmCategory = row.group to row.trackCount
-                                        } else {
-                                            onDeleteGroup(row.group.id)
-                                        }
+                                        Modifier
                                     }
                                 )
-                                HorizontalDivider(
-                                    modifier = Modifier.padding(horizontal = 20.dp),
-                                    thickness = 0.5.dp,
-                                    color = palette.sheetDividerColor
-                                )
-                            }
 
-                            is AudiobookListRow.EmptyCategoryPlaceholder -> {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable(enabled = !isReorderMode) {
-                                            onImportAudioFiles(row.group.id)
-                                        }
-                                        .padding(start = 38.dp, end = 20.dp, top = 12.dp, bottom = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = if (isReorderMode) {
-                                            "Drop here to add to ${row.group.title}"
-                                        } else {
-                                            "Empty · Tap to add audio"
+                            when (row) {
+                                is AudiobookListRow.StandaloneTrack,
+                                is AudiobookListRow.CategoryTrack -> {
+                                    val isEmbedded = row is AudiobookListRow.CategoryTrack
+                                    val track = when (row) {
+                                        is AudiobookListRow.StandaloneTrack -> row.track
+                                        is AudiobookListRow.CategoryTrack -> row.track
+                                    }
+                                    val group = when (row) {
+                                        is AudiobookListRow.StandaloneTrack -> row.group
+                                        is AudiobookListRow.CategoryTrack -> row.group
+                                    }
+
+                                    AudiobookBoundTrackRow(
+                                        group = group,
+                                        track = track,
+                                        isEmbedded = isEmbedded,
+                                        isReorderMode = true,
+                                        audiobookState = audiobookState,
+                                        groupMappingsByGroupId = groupMappingsByGroupId,
+                                        trackMappingsByTrackId = trackMappingsByTrackId,
+                                        rowModifier = liftModifier,
+                                        dragHandleModifier = buildDragModifier(row.stableKey, isCategoryRow = false),
+                                        onPlayTrack = onPlayTrack,
+                                        onLongPressEnterReorder = {},
+                                        onOpenMapping = { target -> mappingTarget = target },
+                                        onAlignChapterLocal = onAlignChapterLocal,
+                                        onOpenWordPackSheet = { showWordPackSheet = true },
+                                        onEnterReorder = { isReorderMode = true },
+                                        onRenameTrack = { tr ->
+                                            renameTarget = RenameSheetTarget.Track(tr)
+                                            renameText = tr.title
                                         },
-                                        fontSize = 12.5.sp,
-                                        color = if (isReorderMode) palette.audioAccent else palette.textMuted.copy(alpha = 0.75f)
+                                        onDeleteTrack = onDeleteTrack
                                     )
                                 }
-                                HorizontalDivider(
-                                    modifier = Modifier.padding(start = 38.dp, end = 20.dp),
-                                    thickness = 0.5.dp,
-                                    color = palette.sheetDividerColor
-                                )
-                            }
 
-                            is AudiobookListRow.CategoryEndMarker -> {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 20.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    HorizontalDivider(
-                                        modifier = Modifier.weight(1f),
-                                        color = palette.audioAccent.copy(alpha = 0.28f)
+                                is AudiobookListRow.CategoryHeader -> {
+                                    val catMapping = groupMappingsByGroupId[row.group.id]
+                                    val catAlignment = catMapping?.let { audiobookState.alignments[it.id] }
+                                    val containsActiveTrack = audiobookState.activeGroupId == row.group.id
+
+                                    CleanCategoryHeaderRow(
+                                        group = row.group,
+                                        totalDurationMs = row.totalDurationMs,
+                                        alignmentStatus = catAlignment?.status ?: AlignmentStatus.NONE,
+                                        isActiveCollapsed = row.group.isCollapsed && containsActiveTrack,
+                                        isReorderMode = true,
+                                        isLocalPackInstalled = audiobookState.isLocalPackInstalled,
+                                        hasCategoryMapping = catMapping != null,
+                                        rowModifier = liftModifier,
+                                        dragHandleModifier = buildDragModifier(row.stableKey, isCategoryRow = true),
+                                        onToggleCollapse = {
+                                            onToggleGroupCollapsed(row.group.id, !row.group.isCollapsed)
+                                        },
+                                        onMapCategory = {
+                                            mappingTarget = MappingSheetTarget.CategoryTarget(
+                                                group = row.group,
+                                                trackCount = row.trackCount
+                                            )
+                                        },
+                                        onAlignCategory = {
+                                            if (catMapping != null) {
+                                                if (audiobookState.isLocalPackInstalled) {
+                                                    onAlignChapterLocal(catMapping.id)
+                                                } else {
+                                                    showWordPackSheet = true
+                                                }
+                                            }
+                                        },
+                                        onImportIntoCategory = { onImportAudioFiles(row.group.id) },
+                                        onReorder = { isReorderMode = true },
+                                        onRename = {
+                                            renameTarget = RenameSheetTarget.Category(row.group)
+                                            renameText = row.group.title
+                                        },
+                                        onDelete = {
+                                            if (row.trackCount > 0) {
+                                                deleteConfirmCategory = row.group to row.trackCount
+                                            } else {
+                                                onDeleteGroup(row.group.id)
+                                            }
+                                        }
                                     )
-                                    Text(
-                                        text = "End of ${row.group.title}",
-                                        fontSize = 10.5.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        color = palette.textMuted
+                                }
+
+                                is AudiobookListRow.EmptyCategoryPlaceholder -> {
+                                    EmptyCategoryPlaceholderRow(
+                                        groupTitle = row.group.title,
+                                        isReorderMode = true,
+                                        onClick = {}
                                     )
-                                    HorizontalDivider(
-                                        modifier = Modifier.weight(1f),
-                                        color = palette.audioAccent.copy(alpha = 0.28f)
-                                    )
+                                }
+
+                                is AudiobookListRow.CategoryEndMarker -> {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 20.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        HorizontalDivider(
+                                            modifier = Modifier.weight(1f),
+                                            color = palette.audioAccent.copy(alpha = 0.28f)
+                                        )
+                                        Text(
+                                            text = "End of ${row.group.title}",
+                                            fontSize = 10.5.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = palette.textMuted
+                                        )
+                                        HorizontalDivider(
+                                            modifier = Modifier.weight(1f),
+                                            color = palette.audioAccent.copy(alpha = 0.28f)
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1554,14 +1687,103 @@ fun AudiobookManagerSheet(
     }
 }
 
-private fun buildMappingStatusLabel(mapping: AudiobookChapterMapping, isPdfBook: Boolean): String {
-    val anchorTag = if (mapping.anchors.isNotEmpty()) " · ${mapping.anchors.size} anchor" else ""
-    return if (isPdfBook) {
-        val range = "p.${mapping.bookStartPageIndex + 1}–${mapping.bookEndPageIndex + 1}"
-        val ch = mapping.bookChapterTitle.takeIf { it.isNotBlank() && it != "Pages ${mapping.bookStartPageIndex + 1}–${mapping.bookEndPageIndex + 1}" }
-        (if (ch != null) "$ch ($range)" else range) + anchorTag
+@Composable
+private fun AudiobookBoundTrackRow(
+    group: AudiobookGroup,
+    track: AudiobookTrack,
+    isEmbedded: Boolean,
+    isReorderMode: Boolean,
+    audiobookState: AudiobookUiState,
+    groupMappingsByGroupId: Map<String, AudiobookChapterMapping>,
+    trackMappingsByTrackId: Map<String, AudiobookChapterMapping>,
+    rowModifier: Modifier,
+    dragHandleModifier: Modifier,
+    onPlayTrack: (String) -> Unit,
+    onLongPressEnterReorder: () -> Unit,
+    onOpenMapping: (MappingSheetTarget) -> Unit,
+    onAlignChapterLocal: (String) -> Unit,
+    onOpenWordPackSheet: () -> Unit,
+    onEnterReorder: () -> Unit,
+    onRenameTrack: (AudiobookTrack) -> Unit,
+    onDeleteTrack: (AudiobookTrack) -> Unit
+) {
+    val parentCatMapping = if (isEmbedded) groupMappingsByGroupId[group.id] else null
+    val ownTrackMapping = if (isEmbedded) {
+        trackMappingsByTrackId[track.id]
     } else {
-        mapping.bookChapterTitle.ifBlank { "Mapped range" } + anchorTag
+        AudiobookMappingResolver.resolveForTrack(track, audiobookState.mappings)
+    }
+    val effectiveMapping = parentCatMapping ?: ownTrackMapping
+    val alignment = if (parentCatMapping == null) {
+        ownTrackMapping?.let { audiobookState.alignments[it.id] }
+    } else {
+        null
+    }
+    val isActive = track.id == audiobookState.activeTrackId
+
+    CleanChapterTrackRow(
+        displayTitle = track.title.ifBlank { "Audio Track" },
+        durationMs = track.effectiveDurationMs,
+        isOverriddenByCategory = parentCatMapping != null,
+        alignmentStatus = alignment?.status ?: AlignmentStatus.NONE,
+        isActive = isActive,
+        isEmbeddedInCategory = isEmbedded,
+        isReorderMode = isReorderMode,
+        isLocalPackInstalled = audiobookState.isLocalPackInstalled,
+        hasOwnMapping = parentCatMapping == null && ownTrackMapping != null,
+        rowModifier = rowModifier,
+        dragHandleModifier = dragHandleModifier,
+        onPlay = { onPlayTrack(track.id) },
+        onLongPressEnterReorder = onLongPressEnterReorder,
+        onMap = {
+            onOpenMapping(
+                MappingSheetTarget.TrackTarget(
+                    group = group,
+                    track = track,
+                    parentCategoryOverride = parentCatMapping
+                )
+            )
+        },
+        onAlignWords = {
+            if (parentCatMapping == null && effectiveMapping != null) {
+                if (audiobookState.isLocalPackInstalled) {
+                    onAlignChapterLocal(effectiveMapping.id)
+                } else {
+                    onOpenWordPackSheet()
+                }
+            }
+        },
+        onReorder = onEnterReorder,
+        onRename = { onRenameTrack(track) },
+        onDelete = { onDeleteTrack(track) }
+    )
+}
+
+@Composable
+private fun EmptyCategoryPlaceholderRow(
+    groupTitle: String,
+    isReorderMode: Boolean,
+    onClick: () -> Unit
+) {
+    val palette = LocalBookFreePalette.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(enabled = !isReorderMode, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = if (isReorderMode) {
+                "Drop here to add to $groupTitle"
+            } else {
+                "Empty · Tap to add audio"
+            },
+            fontSize = 12.sp,
+            color = if (isReorderMode) palette.audioAccent else palette.textMuted.copy(alpha = 0.75f)
+        )
     }
 }
 
@@ -1570,13 +1792,9 @@ private fun buildMappingStatusLabel(mapping: AudiobookChapterMapping, isPdfBook:
 private fun CleanChapterTrackRow(
     displayTitle: String,
     durationMs: Long,
-    mappingLabel: String?,
-    overriddenByCategoryTitle: String?,
+    isOverriddenByCategory: Boolean,
     alignmentStatus: AlignmentStatus,
-    alignmentProvider: AlignmentProvider,
-    alignmentProgress: Int,
     isActive: Boolean,
-    isPlaying: Boolean,
     isEmbeddedInCategory: Boolean,
     isReorderMode: Boolean,
     isLocalPackInstalled: Boolean,
@@ -1594,9 +1812,29 @@ private fun CleanChapterTrackRow(
     val palette = LocalBookFreePalette.current
     var showRowMenu by remember { mutableStateOf(false) }
 
+    val rowShape = RoundedCornerShape(16.dp)
+    val titleColor = when {
+        isActive -> if (palette.isDark) Color.White else palette.textPrimary
+        palette.isDark -> Color(0xFFE4E4E7)
+        else -> palette.textPrimary.copy(alpha = 0.90f)
+    }
+    val durationColor = when {
+        isActive -> if (palette.isDark) Color(0xFFA1A1AA) else palette.textSecondary
+        palette.isDark -> Color(0xFF71717A)
+        else -> palette.textMuted
+    }
+    val dotsColor = when {
+        isActive -> if (palette.isDark) Color(0xFFA1A1AA) else palette.textSecondary
+        palette.isDark -> Color(0xFF52525B)
+        else -> palette.textMuted
+    }
+
     Row(
         modifier = rowModifier
             .fillMaxWidth()
+            .padding(start = if (isEmbeddedInCategory) 14.dp else 0.dp)
+            .clip(rowShape)
+            .background(if (isActive) palette.chaptersActiveCardBg else Color.Transparent)
             .then(
                 if (!isReorderMode) {
                     Modifier.combinedClickable(
@@ -1608,88 +1846,38 @@ private fun CleanChapterTrackRow(
                 }
             )
             .padding(
-                // Pure clean indentation shows category membership without any vertical line
-                start = if (isEmbeddedInCategory) 38.dp else 20.dp,
-                end = 12.dp,
-                top = 13.dp,
-                bottom = 13.dp
+                start = 14.dp,
+                end = 6.dp,
+                top = if (isActive) 12.dp else 10.dp,
+                bottom = if (isActive) 12.dp else 10.dp
             ),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Column(
+        Row(
             modifier = Modifier
                 .weight(1f)
-                .padding(end = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
+                .padding(end = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            Text(
+                text = displayTitle,
+                fontSize = 15.sp,
+                fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Medium,
+                letterSpacing = (-0.2).sp,
+                color = titleColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
+            )
+            if (durationMs > 0L) {
                 Text(
-                    text = displayTitle,
-                    fontSize = 15.sp,
-                    fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Medium,
-                    color = if (isActive) palette.textPrimary else palette.textPrimary.copy(alpha = 0.90f),
+                    text = formatCompactDuration(durationMs),
+                    fontSize = 12.sp,
+                    fontWeight = if (isActive) FontWeight.Medium else FontWeight.Normal,
+                    color = durationColor,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false)
-                )
-                if (durationMs > 0L) {
-                    Text(
-                        text = formatCompactDuration(durationMs),
-                        fontSize = 12.5.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = palette.textMuted,
-                        maxLines = 1,
-                        style = TextStyle(fontFeatureSettings = "tnum")
-                    )
-                }
-            }
-
-            when {
-                overriddenByCategoryTitle != null -> {
-                    Text(
-                        text = "Synced via $overriddenByCategoryTitle",
-                        fontSize = 11.sp,
-                        color = palette.textMuted.copy(alpha = 0.72f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-
-                mappingLabel != null -> {
-                    val statusSuffix = when (alignmentStatus) {
-                        AlignmentStatus.RUNNING, AlignmentStatus.QUEUED -> " · Aligning $alignmentProgress%"
-                        AlignmentStatus.READY -> if (alignmentProvider == AlignmentProvider.CLOUD_PRO) " · Cloud Synced" else " · Word Synced"
-                        AlignmentStatus.NEEDS_CLOUD_RECOMMENDED -> " · Edition Mismatch"
-                        else -> ""
-                    }
-                    val labelColor = when (alignmentStatus) {
-                        AlignmentStatus.READY -> Color(0xFF4ADE80).copy(alpha = 0.85f)
-                        AlignmentStatus.NEEDS_CLOUD_RECOMMENDED -> Color(0xFFF59E0B)
-                        else -> palette.audioAccent.copy(alpha = 0.82f)
-                    }
-                    Text(
-                        text = "$mappingLabel$statusSuffix",
-                        fontSize = 11.sp,
-                        color = labelColor,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-        }
-
-        // Subtle Voice/Waveform icon ONLY for the currently playing / active track
-        if (isActive && !isReorderMode) {
-            Box(
-                modifier = Modifier.padding(end = 6.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                AudioWaveformIcon(
-                    color = if (isPlaying) palette.audioAccent else palette.textPrimary.copy(alpha = 0.55f),
-                    size = 16.dp
+                    style = TextStyle(fontFeatureSettings = "tnum")
                 )
             }
         }
@@ -1697,7 +1885,7 @@ private fun CleanChapterTrackRow(
         if (isReorderMode) {
             Box(
                 modifier = dragHandleModifier
-                    .size(40.dp)
+                    .size(38.dp)
                     .clip(CircleShape),
                 contentAlignment = Alignment.Center
             ) {
@@ -1712,8 +1900,9 @@ private fun CleanChapterTrackRow(
                         .clickable { showRowMenu = true },
                     contentAlignment = Alignment.Center
                 ) {
-                    MenuBarsIcon(
-                        color = palette.textMuted,
+                    MoreDotsIcon(
+                        color = dotsColor,
+                        vertical = true,
                         size = 16.dp
                     )
                 }
@@ -1738,7 +1927,7 @@ private fun CleanChapterTrackRow(
                         }
                     )
 
-                    if (hasOwnMapping && overriddenByCategoryTitle == null &&
+                    if (hasOwnMapping && !isOverriddenByCategory &&
                         alignmentStatus != AlignmentStatus.RUNNING &&
                         alignmentStatus != AlignmentStatus.QUEUED
                     ) {
@@ -1814,11 +2003,8 @@ private fun CleanChapterTrackRow(
 private fun CleanCategoryHeaderRow(
     group: AudiobookGroup,
     totalDurationMs: Long,
-    categoryMappingLabel: String?,
     alignmentStatus: AlignmentStatus,
-    alignmentProgress: Int,
-    showActiveWaveform: Boolean,
-    isPlaying: Boolean,
+    isActiveCollapsed: Boolean,
     isReorderMode: Boolean,
     isLocalPackInstalled: Boolean,
     hasCategoryMapping: Boolean,
@@ -1835,77 +2021,91 @@ private fun CleanCategoryHeaderRow(
     val palette = LocalBookFreePalette.current
     var showCategoryMenu by remember { mutableStateOf(false) }
 
+    val expanded = !group.isCollapsed
+    val headerColorSpec = tween<Color>(durationMillis = 220, easing = FastOutSlowInEasing)
+    val chevronColor by animateColorAsState(
+        targetValue = when {
+            expanded -> if (palette.isDark) Color(0xFFD4D4D8) else palette.textPrimary
+            else -> if (palette.isDark) Color(0xFF71717A) else palette.textMuted
+        },
+        animationSpec = headerColorSpec,
+        label = "cat_chevron_color"
+    )
+    val titleColor by animateColorAsState(
+        targetValue = when {
+            expanded -> if (palette.isDark) Color.White else palette.textPrimary
+            else -> if (palette.isDark) Color(0xFFF4F4F5) else palette.textPrimary
+        },
+        animationSpec = headerColorSpec,
+        label = "cat_title_color"
+    )
+    val durationColor by animateColorAsState(
+        targetValue = when {
+            expanded -> if (palette.isDark) Color(0xFFA1A1AA) else palette.textSecondary
+            else -> if (palette.isDark) Color(0xFF71717A) else palette.textMuted
+        },
+        animationSpec = headerColorSpec,
+        label = "cat_duration_color"
+    )
+    val rowBgColor by animateColorAsState(
+        targetValue = if (isActiveCollapsed) palette.chaptersActiveCardBg else Color.Transparent,
+        animationSpec = headerColorSpec,
+        label = "cat_bg_color"
+    )
+    val dotsColor = if (palette.isDark) Color(0xFF71717A) else palette.textMuted
+
     Row(
         modifier = rowModifier
             .fillMaxWidth()
+            .padding(top = 6.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(rowBgColor)
             .clickable(onClick = onToggleCollapse)
-            .padding(start = 16.dp, end = 12.dp, top = 13.dp, bottom = 13.dp),
+            .padding(
+                start = 10.dp,
+                end = 6.dp,
+                top = 10.dp,
+                bottom = if (expanded) 6.dp else 10.dp
+            ),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
-            modifier = Modifier.size(22.dp),
+            modifier = Modifier.size(20.dp),
             contentAlignment = Alignment.Center
         ) {
             ChevronIcon(
-                color = palette.textSecondary,
-                expanded = !group.isCollapsed,
-                size = 14.dp
+                color = chevronColor,
+                expanded = expanded,
+                size = 15.dp
             )
         }
-        Spacer(modifier = Modifier.width(6.dp))
+        Spacer(modifier = Modifier.width(12.dp))
 
-        Column(
+        Row(
             modifier = Modifier
                 .weight(1f)
                 .padding(end = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            Text(
+                text = group.title,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = (-0.2).sp,
+                color = titleColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
+            )
+            if (totalDurationMs > 0L) {
                 Text(
-                    text = group.title,
-                    fontSize = 15.5.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = palette.textPrimary,
+                    text = formatCompactDuration(totalDurationMs),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Normal,
+                    color = durationColor,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false)
-                )
-                if (totalDurationMs > 0L) {
-                    Text(
-                        text = formatCompactDuration(totalDurationMs),
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = palette.textMuted,
-                        maxLines = 1,
-                        style = TextStyle(fontFeatureSettings = "tnum")
-                    )
-                }
-            }
-            if (categoryMappingLabel != null) {
-                val alignSuffix = when (alignmentStatus) {
-                    AlignmentStatus.RUNNING, AlignmentStatus.QUEUED -> " · Aligning $alignmentProgress%"
-                    AlignmentStatus.READY -> " · Word Synced"
-                    AlignmentStatus.NEEDS_CLOUD_RECOMMENDED -> " · Edition Mismatch"
-                    else -> ""
-                }
-                Text(
-                    text = "$categoryMappingLabel$alignSuffix",
-                    fontSize = 11.sp,
-                    color = if (alignmentStatus == AlignmentStatus.READY) Color(0xFF4ADE80).copy(alpha = 0.85f) else palette.audioAccent.copy(alpha = 0.85f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
-
-        if (showActiveWaveform && !isReorderMode) {
-            Box(modifier = Modifier.padding(end = 6.dp)) {
-                AudioWaveformIcon(
-                    color = if (isPlaying) palette.audioAccent else palette.textPrimary.copy(alpha = 0.55f),
-                    size = 16.dp
+                    style = TextStyle(fontFeatureSettings = "tnum")
                 )
             }
         }
@@ -1913,7 +2113,7 @@ private fun CleanCategoryHeaderRow(
         if (isReorderMode) {
             Box(
                 modifier = dragHandleModifier
-                    .size(40.dp)
+                    .size(38.dp)
                     .clip(CircleShape),
                 contentAlignment = Alignment.Center
             ) {
@@ -1928,8 +2128,9 @@ private fun CleanCategoryHeaderRow(
                         .clickable { showCategoryMenu = true },
                     contentAlignment = Alignment.Center
                 ) {
-                    MenuBarsIcon(
-                        color = palette.textSecondary,
+                    MoreDotsIcon(
+                        color = dotsColor,
+                        vertical = true,
                         size = 16.dp
                     )
                 }
@@ -2064,7 +2265,7 @@ private fun WordHighlightingPackSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-        containerColor = palette.menuSurface,
+        containerColor = palette.chaptersSheetSurface,
         contentColor = palette.textPrimary,
         tonalElevation = 0.dp,
         dragHandle = { MinimalSheetDragHandle() }
@@ -2315,7 +2516,7 @@ private fun AudiobookRangeMapSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-        containerColor = palette.menuSurface,
+        containerColor = palette.chaptersSheetSurface,
         contentColor = palette.textPrimary,
         tonalElevation = 0.dp,
         dragHandle = { MinimalSheetDragHandle() }
