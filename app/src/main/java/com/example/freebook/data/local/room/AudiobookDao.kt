@@ -43,11 +43,17 @@ interface AudiobookDao {
     @Query("SELECT * FROM audiobook_tracks WHERE groupId = :groupId ORDER BY orderIndex ASC")
     suspend fun getTracksForGroupOnce(groupId: String): List<AudiobookTrackEntity>
 
+    @Query("SELECT * FROM audiobook_tracks WHERE id = :trackId LIMIT 1")
+    suspend fun getTrackById(trackId: String): AudiobookTrackEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertTrack(track: AudiobookTrackEntity)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertTracks(tracks: List<AudiobookTrackEntity>)
+
+    @Query("UPDATE audiobook_tracks SET title = :title WHERE id = :trackId")
+    suspend fun renameTrack(trackId: String, title: String)
 
     @Query("UPDATE audiobook_tracks SET groupId = :targetGroupId WHERE id = :trackId")
     suspend fun moveTrackToGroup(trackId: String, targetGroupId: String)
@@ -66,8 +72,11 @@ interface AudiobookDao {
     @Query("SELECT * FROM audiobook_mappings WHERE id = :mappingId LIMIT 1")
     suspend fun getMappingById(mappingId: String): AudiobookMappingEntity?
 
-    @Query("SELECT * FROM audiobook_mappings WHERE groupId = :groupId LIMIT 1")
-    suspend fun getMappingByGroupId(groupId: String): AudiobookMappingEntity?
+    @Query("SELECT * FROM audiobook_mappings WHERE groupId = :groupId AND trackId = '' LIMIT 1")
+    suspend fun getGroupMappingByGroupId(groupId: String): AudiobookMappingEntity?
+
+    @Query("SELECT * FROM audiobook_mappings WHERE trackId = :trackId LIMIT 1")
+    suspend fun getMappingByTrackId(trackId: String): AudiobookMappingEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertMapping(mapping: AudiobookMappingEntity)
@@ -75,11 +84,17 @@ interface AudiobookDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertMappings(mappings: List<AudiobookMappingEntity>)
 
+    @Query("UPDATE audiobook_mappings SET groupId = :newGroupId, trackId = :newTrackId WHERE id = :mappingId")
+    suspend fun reassignMappingOwner(mappingId: String, newGroupId: String, newTrackId: String)
+
     @Query("UPDATE audiobook_mappings SET anchorsJson = :anchorsJson WHERE id = :mappingId")
     suspend fun updateMappingAnchors(mappingId: String, anchorsJson: String)
 
     @Query("DELETE FROM audiobook_mappings WHERE id = :mappingId")
     suspend fun deleteMappingById(mappingId: String)
+
+    @Query("DELETE FROM audiobook_mappings WHERE trackId = :trackId")
+    suspend fun deleteMappingByTrackId(trackId: String)
 
     // ---- Unified AudioAligner Cache (chapter_alignments) ----
 

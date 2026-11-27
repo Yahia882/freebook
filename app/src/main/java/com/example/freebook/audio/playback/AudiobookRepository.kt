@@ -36,6 +36,14 @@ data class BookAudiobookBundle(
     val alignments: Map<String, ChapterAlignmentRecord> = emptyMap()
 )
 
+sealed interface ReorderedAudioEntry {
+    /** A standalone top-level audio chapter (not embedded in any Category). */
+    data class StandaloneTrack(val trackId: String) : ReorderedAudioEntry
+
+    /** An explicit Category along with the ordered list of trackIds embedded inside it. */
+    data class Category(val groupId: String, val trackIds: List<String>) : ReorderedAudioEntry
+}
+
 /**
  * Manages multi-file audiobook imports (SAF persistable URIs or local copy), natural numeric sorting,
  * category/chapter grouping, manual + 1-tap auto-matched book mappings, Sync Anchors,
@@ -129,7 +137,8 @@ class AudiobookRepository(
                         bookId = bookId,
                         title = item.displayTitle,
                         orderIndex = nextGroupOrder++,
-                        isCollapsed = false
+                        isCollapsed = false,
+                        isCategory = false
                     )
                 )
                 createdGroupId
@@ -162,13 +171,14 @@ class AudiobookRepository(
     }
 
     suspend fun createGroup(bookId: String, title: String): AudiobookGroup = withContext(Dispatchers.IO) {
-        val cleanTitle = title.trim().ifBlank { "New Chapter" }
+        val cleanTitle = title.trim().ifBlank { "New Category" }
         val existing = audiobookDao.getGroupsForBookOnce(bookId)
         val nextIdx = (existing.maxOfOrNull { it.orderIndex } ?: -1) + 1
         val model = AudiobookGroup(
             bookId = bookId,
             title = cleanTitle,
-            orderIndex = nextIdx
+            orderIndex = nextIdx,
+            isCategory = true
         )
         audiobookDao.upsertGroup(AudiobookGroupEntity.fromDomainModel(model))
         model
@@ -181,18 +191,200 @@ class AudiobookRepository(
         }
     }
 
+    suspend fun renameTrack(trackId: String, newTitle: String) = withContext(Dispatchers.IO) {
+        val cleaned = newTitle.trim()
+        if (cleaned.isEmpty()) return@withContext
+        val track = audiobookDao.getTrackById(trackId) ?: return@withContext
+        audiobookDao.renameTrack(trackId, cleaned)
+        // Keep standalone wrapper group title synced with its single track
+        val groups = audiobookDao.getGroupsForBookOnce(track.bookId)
+        val parent = groups.firstOrNull { it.id == track.groupId }
+        if (parent != null && !parent.isCategory) {
+            val siblings = audiobookDao.getTracksForGroupOnce(parent.id)
+            if (siblings.size <= 1) {
+                audiobookDao.renameGroup(parent.id, cleaned)
+            }
+        }
+    }
+
+    suspend fun setGroupCollapsed(groupId: String, collapsed: Boolean) = withContext(Dispatchers.IO) {
+        audiobookDao.setGroupCollapsed(groupId, collapsed)
+    }
+
     suspend fun moveTrackToGroup(trackId: String, targetGroupId: String) = withContext(Dispatchers.IO) {
+        val track = audiobookDao.getTrackById(trackId) ?: return@withContext
+        if (track.groupId == targetGroupId) return@withContext
+        val oldGroupId = track.groupId
         audiobookDao.moveTrackToGroup(trackId, targetGroupId)
+        // Migrate individual track mapping to stay attached to this track in its new category
+        val trackMapping = audiobookDao.getMappingByTrackId(trackId)
+        if (trackMapping != null) {
+            audiobookDao.reassignMappingOwner(trackMapping.id, targetGroupId, trackId)
+        } else {
+            // If leaving a dissolved standalone wrapper group that held a legacy group mapping, preserve it on this track
+            val oldGroup = audiobookDao.getGroupsForBookOnce(track.bookId).firstOrNull { it.id == oldGroupId }
+            val remainingInOld = audiobookDao.getTracksForGroupOnce(oldGroupId)
+            if (oldGroup != null && !oldGroup.isCategory && remainingInOld.isEmpty()) {
+                val legacyMap = audiobookDao.getGroupMappingByGroupId(oldGroupId)
+                if (legacyMap != null) {
+                    audiobookDao.reassignMappingOwner(legacyMap.id, targetGroupId, trackId)
+                }
+                audiobookDao.deleteGroupById(oldGroupId)
+            }
+        }
     }
 
     suspend fun deleteGroup(groupId: String) = withContext(Dispatchers.IO) {
+        val tracks = audiobookDao.getTracksForGroupOnce(groupId)
         audiobookDao.deleteGroupById(groupId)
+        tracks.forEach { t ->
+            if (t.isCopiedLocally) {
+                runCatching { File(t.sourceUri).delete() }
+            }
+        }
     }
 
     suspend fun deleteTrack(track: AudiobookTrack) = withContext(Dispatchers.IO) {
+        audiobookDao.deleteMappingByTrackId(track.id)
         audiobookDao.deleteTrackById(track.id)
         if (track.isCopiedLocally) {
             runCatching { File(track.sourceUri).delete() }
+        }
+        // Clean up wrapper group if this was a standalone chapter
+        val groups = audiobookDao.getGroupsForBookOnce(track.bookId)
+        val parent = groups.firstOrNull { it.id == track.groupId }
+        if (parent != null && !parent.isCategory) {
+            val remaining = audiobookDao.getTracksForGroupOnce(parent.id)
+            if (remaining.isEmpty()) {
+                audiobookDao.deleteGroupById(parent.id)
+            }
+        }
+    }
+
+    /**
+     * Persists the full reordered hierarchy produced by drag-and-drop across standalone chapters and categories.
+     * Moves tracks cleanly into/out of categories while preserving individual track mappings and avoiding FK cascades.
+     */
+    suspend fun applyReorderedStructure(
+        bookId: String,
+        entries: List<ReorderedAudioEntry>
+    ) = withContext(Dispatchers.IO) {
+        val existingGroups = audiobookDao.getGroupsForBookOnce(bookId).associateBy { it.id }
+        val existingTracks = audiobookDao.getTracksForBookOnce(bookId).associateBy { it.id }
+        val existingMappings = audiobookDao.getMappingsForBookOnce(bookId)
+
+        val updatedGroups = mutableListOf<AudiobookGroupEntity>()
+        val updatedTracks = mutableListOf<AudiobookTrackEntity>()
+        val keptGroupIds = mutableSetOf<String>()
+        val claimedStandaloneWrapperIds = mutableSetOf<String>()
+        val mappingReassignments = mutableListOf<Triple<String, String, String>>() // (mappingId, newGroupId, newTrackId)
+
+        val trackMappingsByTrackId = existingMappings
+            .filter { it.trackId.isNotBlank() }
+            .associateBy { it.trackId }
+        val groupMappingsByGroupId = existingMappings
+            .filter { it.trackId.isBlank() }
+            .associateBy { it.groupId }
+        val trackCountByOldGroup = existingTracks.values.groupingBy { it.groupId }.eachCount()
+
+        var groupOrder = 0
+        var trackOrder = 0
+
+        for (entry in entries) {
+            when (entry) {
+                is ReorderedAudioEntry.Category -> {
+                    val existing = existingGroups[entry.groupId] ?: continue
+                    val updatedCat = existing.copy(
+                        orderIndex = groupOrder++,
+                        isCategory = true
+                    )
+                    updatedGroups.add(updatedCat)
+                    keptGroupIds.add(updatedCat.id)
+
+                    for (tid in entry.trackIds) {
+                        val tr = existingTracks[tid] ?: continue
+                        val oldGroupId = tr.groupId
+                        updatedTracks.add(
+                            tr.copy(
+                                groupId = updatedCat.id,
+                                orderIndex = trackOrder++
+                            )
+                        )
+                        val existingTrackMap = trackMappingsByTrackId[tid]
+                        if (existingTrackMap != null && existingTrackMap.groupId != updatedCat.id) {
+                            mappingReassignments.add(Triple(existingTrackMap.id, updatedCat.id, tid))
+                        } else if (existingTrackMap == null && oldGroupId != updatedCat.id) {
+                            // Preserve a standalone chapter's legacy group mapping when dragged into a category
+                            val oldGroup = existingGroups[oldGroupId]
+                            val legacyMap = groupMappingsByGroupId[oldGroupId]
+                            if (oldGroup != null && !oldGroup.isCategory && (trackCountByOldGroup[oldGroupId] ?: 0) == 1 && legacyMap != null) {
+                                mappingReassignments.add(Triple(legacyMap.id, updatedCat.id, tid))
+                            }
+                        }
+                    }
+                }
+
+                is ReorderedAudioEntry.StandaloneTrack -> {
+                    val tr = existingTracks[entry.trackId] ?: continue
+                    val oldGroup = existingGroups[tr.groupId]
+                    val canReuseOldWrapper = oldGroup != null &&
+                        !oldGroup.isCategory &&
+                        oldGroup.id !in claimedStandaloneWrapperIds &&
+                        oldGroup.id !in keptGroupIds
+
+                    val wrapperGroup = if (canReuseOldWrapper) {
+                        claimedStandaloneWrapperIds.add(oldGroup.id)
+                        oldGroup.copy(
+                            title = tr.title,
+                            orderIndex = groupOrder++,
+                            isCategory = false,
+                            isCollapsed = false
+                        )
+                    } else {
+                        AudiobookGroupEntity(
+                            id = UUID.randomUUID().toString(),
+                            bookId = bookId,
+                            title = tr.title,
+                            orderIndex = groupOrder++,
+                            isCollapsed = false,
+                            isCategory = false
+                        )
+                    }
+
+                    updatedGroups.add(wrapperGroup)
+                    keptGroupIds.add(wrapperGroup.id)
+                    updatedTracks.add(
+                        tr.copy(
+                            groupId = wrapperGroup.id,
+                            orderIndex = trackOrder++
+                        )
+                    )
+
+                    val existingTrackMap = trackMappingsByTrackId[tr.id]
+                    if (existingTrackMap != null && existingTrackMap.groupId != wrapperGroup.id) {
+                        mappingReassignments.add(Triple(existingTrackMap.id, wrapperGroup.id, tr.id))
+                    }
+                }
+            }
+        }
+
+        // 1. Upsert all kept & newly created groups first (satisfies FKs)
+        if (updatedGroups.isNotEmpty()) {
+            audiobookDao.upsertGroups(updatedGroups)
+        }
+        // 2. Upsert all tracks with new groupIds and sequential orderIndices
+        if (updatedTracks.isNotEmpty()) {
+            audiobookDao.upsertTracks(updatedTracks)
+        }
+        // 3. Reassign moved mappings BEFORE removing dissolved wrapper groups (prevents CASCADE delete)
+        for ((mappingId, newGroupId, newTrackId) in mappingReassignments) {
+            audiobookDao.reassignMappingOwner(mappingId, newGroupId, newTrackId)
+        }
+        // 4. Delete dissolved standalone wrapper groups
+        for (oldId in existingGroups.keys) {
+            if (oldId !in keptGroupIds) {
+                audiobookDao.deleteGroupById(oldId)
+            }
         }
     }
 
@@ -223,36 +415,59 @@ class AudiobookRepository(
     }
 
     /**
-     * Maps an audio category/chapter [groupId] to a book chapter or manual PDF page / EPUB char range.
+     * Maps either a Category ([trackId] == `""`) or an individual audio track ([trackId] non-empty)
+     * to a book chapter range or manual PDF page / EPUB char range.
      * Clears stale word alignment cache if the mapped book range changed.
      */
     suspend fun saveChapterMapping(
         bookId: String,
         groupId: String,
+        trackId: String = "",
         chapterTitle: String,
         startPageIndex: Int,
         endPageIndex: Int,
         startCharOffset: Int,
         endCharOffset: Int
     ): AudiobookChapterMapping = withContext(Dispatchers.IO) {
-        val existing = audiobookDao.getMappingByGroupId(groupId)
-        val rangeChanged = existing != null && (
-            existing.bookStartPageIndex != startPageIndex ||
-                existing.bookEndPageIndex != endPageIndex ||
-                existing.bookStartCharOffset != startCharOffset ||
-                existing.bookEndCharOffset != endCharOffset
+        val cleanTrackId = trackId.trim()
+        val existing = if (cleanTrackId.isNotBlank()) {
+            audiobookDao.getMappingByTrackId(cleanTrackId)
+        } else {
+            audiobookDao.getGroupMappingByGroupId(groupId)
+        }
+
+        // If saving a track-level mapping for a standalone wrapper that previously had a legacy group-level mapping,
+        // migrate/replace that legacy group-level row so no duplicate mapping remains on the wrapper group.
+        val legacyWrapperMapping = if (cleanTrackId.isNotBlank()) {
+            val parent = audiobookDao.getGroupsForBookOnce(bookId).firstOrNull { it.id == groupId }
+            if (parent != null && !parent.isCategory) {
+                audiobookDao.getGroupMappingByGroupId(groupId)
+            } else {
+                null
+            }
+        } else {
+            null
+        }
+        val effectiveExisting = existing ?: legacyWrapperMapping
+
+        val rangeChanged = effectiveExisting != null && (
+            effectiveExisting.bookStartPageIndex != startPageIndex ||
+                effectiveExisting.bookEndPageIndex != endPageIndex ||
+                effectiveExisting.bookStartCharOffset != startCharOffset ||
+                effectiveExisting.bookEndCharOffset != endCharOffset
             )
 
         val mapping = AudiobookChapterMapping(
-            id = existing?.id ?: UUID.randomUUID().toString(),
+            id = effectiveExisting?.id ?: UUID.randomUUID().toString(),
             bookId = bookId,
             groupId = groupId,
+            trackId = cleanTrackId,
             bookChapterTitle = chapterTitle,
             bookStartPageIndex = startPageIndex.coerceAtLeast(0),
             bookEndPageIndex = endPageIndex.coerceAtLeast(startPageIndex.coerceAtLeast(0)),
             bookStartCharOffset = startCharOffset.coerceAtLeast(0),
             bookEndCharOffset = endCharOffset.coerceAtLeast(startCharOffset.coerceAtLeast(0)),
-            anchors = if (rangeChanged) emptyList() else existing?.toDomainModel()?.anchors.orEmpty()
+            anchors = if (rangeChanged) emptyList() else effectiveExisting?.toDomainModel()?.anchors.orEmpty()
         )
         audiobookDao.upsertMapping(AudiobookMappingEntity.fromDomainModel(mapping))
         if (rangeChanged) {
@@ -284,7 +499,7 @@ class AudiobookRepository(
     }
 
     /**
-     * 1-tap Zero-AI Auto-Match: pairs imported audio groups against [chapters] by chapter numbers
+     * 1-tap Zero-AI Auto-Match: pairs imported audio tracks against [chapters] by chapter numbers
      * and normalized title similarity. Returns count of chapters matched.
      */
     suspend fun autoMatchGroupsToChapters(
@@ -292,41 +507,48 @@ class AudiobookRepository(
         chapters: List<SyncChapter>
     ): Int = withContext(Dispatchers.IO) {
         val groups = audiobookDao.getGroupsForBookOnce(bookId).map { it.toDomainModel() }
+        val allTracks = audiobookDao.getTracksForBookOnce(bookId).map { it.toDomainModel() }
         if (groups.isEmpty() || chapters.isEmpty()) return@withContext 0
 
+        val groupRank = groups.mapIndexed { idx, g -> g.id to idx }.toMap()
+        val orderedTracks = allTracks.sortedWith(
+            compareBy<AudiobookTrack> { groupRank[it.groupId] ?: Int.MAX_VALUE }
+                .thenBy { it.orderIndex }
+        )
         val usedChapterIds = mutableSetOf<String>()
         var matched = 0
 
-        for ((gIdx, group) in groups.withIndex()) {
-            val groupNum = extractLeadingChapterNumber(group.title)
-            val normGroup = normalizeMatchKey(group.title)
+        for ((tIdx, track) in orderedTracks.withIndex()) {
+            val trackNum = extractLeadingChapterNumber(track.title)
+            val normTrack = normalizeMatchKey(track.title)
 
             // 1. Exact/contains title match
             var best: SyncChapter? = chapters.firstOrNull { ch ->
                 ch.id !in usedChapterIds &&
-                    normGroup.length >= 3 &&
-                    (normalizeMatchKey(ch.title) == normGroup ||
-                        normalizeMatchKey(ch.title).contains(normGroup) ||
-                        normGroup.contains(normalizeMatchKey(ch.title)))
+                    normTrack.length >= 3 &&
+                    (normalizeMatchKey(ch.title) == normTrack ||
+                        normalizeMatchKey(ch.title).contains(normTrack) ||
+                        normTrack.contains(normalizeMatchKey(ch.title)))
             }
 
             // 2. Matching chapter number (e.g., "Ch 03" <-> "Chapter 3")
-            if (best == null && groupNum != null) {
+            if (best == null && trackNum != null) {
                 best = chapters.firstOrNull { ch ->
-                    ch.id !in usedChapterIds && extractLeadingChapterNumber(ch.title) == groupNum
+                    ch.id !in usedChapterIds && extractLeadingChapterNumber(ch.title) == trackNum
                 }
             }
 
-            // 3. Positional fallback if group count roughly aligns with chapter count
-            if (best == null && gIdx in chapters.indices && chapters[gIdx].id !in usedChapterIds) {
-                best = chapters[gIdx]
+            // 3. Positional fallback if track index maps cleanly into chapter list
+            if (best == null && tIdx in chapters.indices && chapters[tIdx].id !in usedChapterIds) {
+                best = chapters[tIdx]
             }
 
             if (best != null) {
                 usedChapterIds.add(best.id)
                 saveChapterMapping(
                     bookId = bookId,
-                    groupId = group.id,
+                    groupId = track.groupId,
+                    trackId = track.id,
                     chapterTitle = best.title,
                     startPageIndex = best.startPageIndex,
                     endPageIndex = best.endPageIndex,

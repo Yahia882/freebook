@@ -32,14 +32,16 @@ data class AudiobookGroupEntity(
     val bookId: String,
     val title: String,
     val orderIndex: Int,
-    @ColumnInfo(defaultValue = "0") val isCollapsed: Boolean = false
+    @ColumnInfo(defaultValue = "0") val isCollapsed: Boolean = false,
+    @ColumnInfo(defaultValue = "0") val isCategory: Boolean = false
 ) {
     fun toDomainModel(): AudiobookGroup = AudiobookGroup(
         id = id,
         bookId = bookId,
         title = title,
         orderIndex = orderIndex,
-        isCollapsed = isCollapsed
+        isCollapsed = isCollapsed,
+        isCategory = isCategory
     )
 
     companion object {
@@ -48,7 +50,8 @@ data class AudiobookGroupEntity(
             bookId = model.bookId,
             title = model.title,
             orderIndex = model.orderIndex,
-            isCollapsed = model.isCollapsed
+            isCollapsed = model.isCollapsed,
+            isCategory = model.isCategory
         )
     }
 }
@@ -136,13 +139,14 @@ data class AudiobookTrackEntity(
     ],
     indices = [
         Index(value = ["bookId"]),
-        Index(value = ["groupId"], unique = true)
+        Index(value = ["groupId", "trackId"], unique = true)
     ]
 )
 data class AudiobookMappingEntity(
     @PrimaryKey val id: String,
     val bookId: String,
     val groupId: String,
+    @ColumnInfo(defaultValue = "''") val trackId: String = "",
     @ColumnInfo(defaultValue = "''") val bookChapterTitle: String = "",
     @ColumnInfo(defaultValue = "0") val bookStartPageIndex: Int = 0,
     @ColumnInfo(defaultValue = "0") val bookEndPageIndex: Int = 0,
@@ -154,6 +158,7 @@ data class AudiobookMappingEntity(
         id = id,
         bookId = bookId,
         groupId = groupId,
+        trackId = trackId,
         bookChapterTitle = bookChapterTitle,
         bookStartPageIndex = bookStartPageIndex,
         bookEndPageIndex = bookEndPageIndex,
@@ -167,6 +172,7 @@ data class AudiobookMappingEntity(
             id = model.id,
             bookId = model.bookId,
             groupId = model.groupId,
+            trackId = model.trackId,
             bookChapterTitle = model.bookChapterTitle,
             bookStartPageIndex = model.bookStartPageIndex,
             bookEndPageIndex = model.bookEndPageIndex,

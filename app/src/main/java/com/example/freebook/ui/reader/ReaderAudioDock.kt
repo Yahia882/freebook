@@ -1123,15 +1123,19 @@ fun ReaderAudioOverlaysAndSheets(
     val context = LocalContext.current
     val palette = LocalBookFreePalette.current
     val coroutineScope = rememberCoroutineScope()
+    var pendingImportTargetGroupId by remember { mutableStateOf<String?>(null) }
 
     val audiobookImportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
+        val targetGroupId = pendingImportTargetGroupId
+        pendingImportTargetGroupId = null
         if (uris.isNotEmpty()) {
             coroutineScope.launch {
                 val added = audioState.appContainer.audiobookRepository.importAudioFiles(
                     bookId = book.id,
-                    uris = uris
+                    uris = uris,
+                    targetGroupId = targetGroupId
                 )
                 Toast.makeText(
                     context,
@@ -1318,7 +1322,8 @@ fun ReaderAudioOverlaysAndSheets(
             totalPdfPages = derivedTotalPositions.coerceAtLeast(1),
             currentBookPageIndex = currentPdfPageIndex,
             currentBookCharOffset = currentCharOffset,
-            onImportAudioFiles = {
+            onImportAudioFiles = { targetGroupId ->
+                pendingImportTargetGroupId = targetGroupId
                 audiobookImportLauncher.launch(
                     arrayOf("audio/*", "application/ogg", "application/octet-stream")
                 )
@@ -1333,9 +1338,19 @@ fun ReaderAudioOverlaysAndSheets(
                     audioState.appContainer.audiobookRepository.renameGroup(groupId, newTitle)
                 }
             },
-            onMoveGroupOrder = { groupId, moveUp ->
+            onRenameTrack = { trackId, newTitle ->
                 coroutineScope.launch {
-                    audioState.appContainer.audiobookRepository.moveGroupOrder(book.id, groupId, moveUp)
+                    audioState.appContainer.audiobookRepository.renameTrack(trackId, newTitle)
+                }
+            },
+            onToggleGroupCollapsed = { groupId, collapsed ->
+                coroutineScope.launch {
+                    audioState.appContainer.audiobookRepository.setGroupCollapsed(groupId, collapsed)
+                }
+            },
+            onApplyReorderedStructure = { entries ->
+                coroutineScope.launch {
+                    audioState.appContainer.audiobookRepository.applyReorderedStructure(book.id, entries)
                 }
             },
             onDeleteGroup = { groupId ->
@@ -1343,18 +1358,9 @@ fun ReaderAudioOverlaysAndSheets(
                     audioState.appContainer.audiobookRepository.deleteGroup(groupId)
                 }
             },
-            onPlayGroup = { groupId ->
-                audioState.audiobookController.playGroup(groupId, autoPlay = true)
-                audioState.setShowAudiobookManagerSheet(false)
-            },
             onPlayTrack = { trackId ->
                 audioState.audiobookController.playTrack(trackId, autoPlay = true)
                 audioState.setShowAudiobookManagerSheet(false)
-            },
-            onMoveTrackToGroup = { trackId, targetGroupId ->
-                coroutineScope.launch {
-                    audioState.appContainer.audiobookRepository.moveTrackToGroup(trackId, targetGroupId)
-                }
             },
             onDeleteTrack = { track ->
                 coroutineScope.launch {
@@ -1374,11 +1380,12 @@ fun ReaderAudioOverlaysAndSheets(
                     ).show()
                 }
             },
-            onSaveMapping = { groupId, title, startP, endP, startC, endC ->
+            onSaveMapping = { groupId, trackId, title, startP, endP, startC, endC ->
                 coroutineScope.launch {
                     audioState.appContainer.audiobookRepository.saveChapterMapping(
                         bookId = book.id,
                         groupId = groupId,
+                        trackId = trackId,
                         chapterTitle = title,
                         startPageIndex = startP,
                         endPageIndex = endP,

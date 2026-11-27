@@ -116,7 +116,8 @@ data class AudiobookGroup(
     val bookId: String,
     val title: String,
     val orderIndex: Int = 0,
-    val isCollapsed: Boolean = false
+    val isCollapsed: Boolean = false,
+    val isCategory: Boolean = false
 )
 
 data class AudiobookTrack(
@@ -189,13 +190,45 @@ data class AudiobookChapterMapping(
     val id: String = UUID.randomUUID().toString(),
     val bookId: String,
     val groupId: String,
+    /** Empty string = category/group-level mapping (overrides track mappings in the same group). Non-empty = individual track mapping. */
+    val trackId: String = "",
     val bookChapterTitle: String = "",
     val bookStartPageIndex: Int = 0,
     val bookEndPageIndex: Int = 0,
     val bookStartCharOffset: Int = 0,
     val bookEndCharOffset: Int = 0,
     val anchors: List<SyncAnchor> = emptyList()
-)
+) {
+    val isTrackLevel: Boolean get() = trackId.isNotBlank()
+    val isCategoryLevel: Boolean get() = trackId.isBlank()
+}
+
+object AudiobookMappingResolver {
+    /**
+     * Resolves the effective mapping for a single [track]:
+     * a category/group-level mapping (`trackId == ""`) always overrides any individual track mapping inside that category.
+     */
+    fun resolveForTrack(
+        track: AudiobookTrack,
+        mappings: List<AudiobookChapterMapping>
+    ): AudiobookChapterMapping? {
+        val groupOverride = mappings.firstOrNull { it.groupId == track.groupId && it.isCategoryLevel }
+        if (groupOverride != null) return groupOverride
+        return mappings.firstOrNull { it.trackId == track.id }
+    }
+
+    /**
+     * Returns all currently active mappings (excluding track-level mappings that are overridden by their parent category mapping).
+     */
+    fun activeMappings(mappings: List<AudiobookChapterMapping>): List<AudiobookChapterMapping> {
+        val overriddenGroupIds = mappings
+            .asSequence()
+            .filter { it.isCategoryLevel }
+            .map { it.groupId }
+            .toSet()
+        return mappings.filter { it.isCategoryLevel || it.groupId !in overriddenGroupIds }
+    }
+}
 
 enum class AlignmentProvider {
     NONE,

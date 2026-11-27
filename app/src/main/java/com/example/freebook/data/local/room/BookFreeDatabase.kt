@@ -18,7 +18,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         PdfPageMetricEntity::class,
         AudiobookPlaybackStateEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class BookFreeDatabase : RoomDatabase() {
@@ -170,6 +170,15 @@ abstract class BookFreeDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE audiobook_groups ADD COLUMN isCategory INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE audiobook_mappings ADD COLUMN trackId TEXT NOT NULL DEFAULT ''")
+                db.execSQL("DROP INDEX IF EXISTS index_audiobook_mappings_groupId")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_audiobook_mappings_groupId_trackId ON audiobook_mappings(groupId, trackId)")
+            }
+        }
+
         @Volatile
         private var INSTANCE: BookFreeDatabase? = null
 
@@ -180,7 +189,7 @@ abstract class BookFreeDatabase : RoomDatabase() {
                     BookFreeDatabase::class.java,
                     DB_NAME
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .build()
                     .also { INSTANCE = it }
             }

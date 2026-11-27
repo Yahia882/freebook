@@ -50,7 +50,11 @@ class ChapterAlignmentWorker(
         val book = bookEntity.toDomainModel()
         val mappingEntity = dao.getMappingById(mappingId) ?: return Result.failure()
         val mapping = mappingEntity.toDomainModel()
-        val groupTracks = dao.getTracksForGroupOnce(mapping.groupId).map { it.toDomainModel() }
+        val groupTracks = if (mapping.isTrackLevel) {
+            dao.getTrackById(mapping.trackId)?.let { listOf(it.toDomainModel()) }.orEmpty()
+        } else {
+            dao.getTracksForGroupOnce(mapping.groupId).map { it.toDomainModel() }
+        }
         if (groupTracks.isEmpty()) return Result.failure()
 
         val audioSlices = groupTracks.map {

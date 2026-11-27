@@ -23,6 +23,7 @@ import com.example.freebook.model.ActiveWordHighlight
 import com.example.freebook.model.AlignmentProvider
 import com.example.freebook.model.AlignmentStatus
 import com.example.freebook.model.AudiobookChapterMapping
+import com.example.freebook.model.AudiobookMappingResolver
 import com.example.freebook.model.AudiobookPlaybackState
 import com.example.freebook.model.AudiobookTrack
 import com.example.freebook.model.AudiobookUiState
@@ -369,12 +370,13 @@ class AudiobookSyncController(
     }
 
     /**
-     * Returns true if a mapped audiobook chapter covers `(pageIndex, charOffset)`.
+     * Returns true if an active (non-overridden) audiobook mapping covers `(pageIndex, charOffset)`.
      */
     fun hasMappingForPosition(pageIndex: Int, charOffset: Int): Boolean {
         val book = activeBook ?: return false
         if (orderedTracks.isEmpty() || currentBundle.mappings.isEmpty()) return false
-        return currentBundle.mappings.any { m ->
+        val effectiveMappings = AudiobookMappingResolver.activeMappings(currentBundle.mappings)
+        return effectiveMappings.any { m ->
             if (book.isPdf) {
                 pageIndex in m.bookStartPageIndex..m.bookEndPageIndex
             } else {
@@ -395,14 +397,18 @@ class AudiobookSyncController(
 
     /**
      * 1-tap "Sync Here" anchor calibration: pins current live audio timestamp to the user's
-     * current book position (page/charOffset) inside the active mapped chapter.
+     * current book position (page/charOffset) inside the active mapped chapter or track.
      */
     fun calibrateSyncHere(currentPageIndex: Int, currentCharOffset: Int): Boolean {
         val p = player ?: return false
         val activeIdx = p.currentMediaItemIndex.takeIf { it in orderedTracks.indices } ?: return false
         val track = orderedTracks[activeIdx]
-        val mapping = currentBundle.mappings.firstOrNull { it.groupId == track.groupId } ?: return false
-        val chapterAudioMs = computeChapterAudioPositionMs(track.groupId, activeIdx, p.currentPosition)
+        val mapping = AudiobookMappingResolver.resolveForTrack(track, currentBundle.mappings) ?: return false
+        val chapterAudioMs = if (mapping.isTrackLevel) {
+            p.currentPosition.coerceAtLeast(0L)
+        } else {
+            computeChapterAudioPositionMs(track.groupId, activeIdx, p.currentPosition)
+        }
 
         scope.launch {
             repository.addSyncAnchor(
@@ -426,28 +432,35 @@ class AudiobookSyncController(
     /**
      * Bidirectional Text -> Audio seek ("Play Audio from Here" / fast double-tap on word):
      * jumps audiobook to exact word millisecond if aligned, or proportional estimate if unaligned.
-     * Returns `true` if a mapped audiobook chapter matched the tapped book position.
+     * Respects Category > Track mapping precedence.
+     * Returns `true` if a mapped audiobook chapter/track matched the tapped book position.
      */
     fun seekAudioToBookPosition(pageIndex: Int, charOffset: Int, startPlaying: Boolean = true): Boolean {
         val book = activeBook ?: return false
-        val mapping = currentBundle.mappings.firstOrNull { m ->
+        val effectiveMappings = AudiobookMappingResolver.activeMappings(currentBundle.mappings)
+        val mapping = effectiveMappings.firstOrNull { m ->
             if (book.isPdf) {
                 pageIndex in m.bookStartPageIndex..m.bookEndPageIndex
             } else {
                 charOffset in m.bookStartCharOffset..m.bookEndCharOffset
             }
         } ?: return false
-        val groupTracks = orderedTracks.filter { it.groupId == mapping.groupId }
-        if (groupTracks.isEmpty()) return false
-        val firstGlobalTrackIdx = orderedTracks.indexOfFirst { it.id == groupTracks.first().id }
+
+        val targetTracks = if (mapping.isTrackLevel) {
+            orderedTracks.filter { it.id == mapping.trackId }
+        } else {
+            orderedTracks.filter { it.groupId == mapping.groupId }
+        }
+        if (targetTracks.isEmpty()) return false
+        val firstGlobalTrackIdx = orderedTracks.indexOfFirst { it.id == targetTracks.first().id }
         if (firstGlobalTrackIdx < 0) return false
 
         _uiState.update { it.copy(isUserDetachedFromSync = false, followSyncEnabled = true) }
         lastProgrammaticSeekMs = System.currentTimeMillis()
 
         scope.launch {
-            val groupStartGlobalMs = trackGlobalOffsetsMs[firstGlobalTrackIdx]
-            val groupDurationMs = groupTracks.sumOf { it.effectiveDurationMs }.coerceAtLeast(1L)
+            val startGlobalMs = trackGlobalOffsetsMs[firstGlobalTrackIdx]
+            val scopeDurationMs = targetTracks.sumOf { it.effectiveDurationMs }.coerceAtLeast(1L)
 
             // 1. Exact ms lookup if word alignment is cached
             val timings = getOrLoadTimings(mapping.id)
@@ -462,10 +475,10 @@ class AudiobookSyncController(
                 val dist = getOrBuildWeightDistribution(book, mapping)
                 val targetW = dist.weightAtPosition(pageIndex, charOffset)
                 val frac = (targetW.toDouble() / dist.totalWeight.toDouble()).coerceIn(0.0, 1.0)
-                (frac * groupDurationMs).toLong()
+                (frac * scopeDurationMs).toLong()
             }
 
-            seekToGlobalPositionMs(groupStartGlobalMs + chapterMs)
+            seekToGlobalPositionMs(startGlobalMs + chapterMs)
             if (startPlaying && !_uiState.value.isPlaying) {
                 togglePlayPause()
             }
@@ -667,12 +680,20 @@ class AudiobookSyncController(
 
         val idx = p.currentMediaItemIndex.takeIf { it in orderedTracks.indices } ?: return
         val track = orderedTracks[idx]
-        val mapping = currentBundle.mappings.firstOrNull { it.groupId == track.groupId } ?: return
-        val chapterAudioMs = computeChapterAudioPositionMs(track.groupId, idx, p.currentPosition)
-        val chapterDurationMs = orderedTracks
-            .filter { it.groupId == track.groupId }
-            .sumOf { it.effectiveDurationMs }
-            .coerceAtLeast(p.duration.coerceAtLeast(1L))
+        val mapping = AudiobookMappingResolver.resolveForTrack(track, currentBundle.mappings) ?: return
+        val chapterAudioMs = if (mapping.isTrackLevel) {
+            p.currentPosition.coerceAtLeast(0L)
+        } else {
+            computeChapterAudioPositionMs(track.groupId, idx, p.currentPosition)
+        }
+        val chapterDurationMs = if (mapping.isTrackLevel) {
+            track.effectiveDurationMs.coerceAtLeast(p.duration.coerceAtLeast(1L))
+        } else {
+            orderedTracks
+                .filter { it.groupId == track.groupId }
+                .sumOf { it.effectiveDurationMs }
+                .coerceAtLeast(p.duration.coerceAtLeast(1L))
+        }
 
         scope.launch {
             val alignRecord = currentBundle.alignments[mapping.id]
@@ -811,20 +832,24 @@ class AudiobookSyncController(
     private fun maybePrefetchNextChapterAlignment() {
         if (!packManager.isModelInstalled()) return
         val state = _uiState.value
-        val activeGroupId = state.activeGroupId ?: return
-        val groupIdx = state.groups.indexOfFirst { it.id == activeGroupId }
-        if (groupIdx < 0) return
+        val activeTrackId = state.activeTrackId ?: return
+        val activeIdx = orderedTracks.indexOfFirst { it.id == activeTrackId }
+        if (activeIdx < 0) return
+        val activeTrack = orderedTracks[activeIdx]
 
-        // Lazy alignment: active chapter first (expedited), then next chapter when idle
-        val activeMap = state.mappings.firstOrNull { it.groupId == activeGroupId }
+        // Lazy alignment: active track/category first (expedited), then next track/category when idle
+        val activeMap = AudiobookMappingResolver.resolveForTrack(activeTrack, state.mappings)
         if (activeMap != null) {
             val rec = state.alignments[activeMap.id]
             if (rec == null || rec.status == AlignmentStatus.NONE) {
                 enqueueChapterAlignment(activeMap.id, AlignmentProvider.LOCAL_MMS_FA, priority = true)
             }
         }
-        val nextGroup = state.groups.getOrNull(groupIdx + 1) ?: return
-        val nextMap = state.mappings.firstOrNull { it.groupId == nextGroup.id } ?: return
+        val nextTrack = orderedTracks.drop(activeIdx + 1).firstOrNull { candidate ->
+            val candidateMap = AudiobookMappingResolver.resolveForTrack(candidate, state.mappings)
+            candidateMap != null && candidateMap.id != activeMap?.id
+        } ?: return
+        val nextMap = AudiobookMappingResolver.resolveForTrack(nextTrack, state.mappings) ?: return
         val nextRec = state.alignments[nextMap.id]
         if (nextRec == null || nextRec.status == AlignmentStatus.NONE) {
             enqueueChapterAlignment(nextMap.id, AlignmentProvider.LOCAL_MMS_FA, priority = false)

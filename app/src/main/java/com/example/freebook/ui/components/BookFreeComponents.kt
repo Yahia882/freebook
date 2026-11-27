@@ -963,3 +963,113 @@ fun CircularSkipArrowIcon(
         }
     }
 }
+
+@Composable
+fun CheckmarkIcon(color: Color, size: Dp = 18.dp) {
+    Canvas(modifier = Modifier.size(size)) {
+        val stroke = 2.dp.toPx()
+        val w = this.size.width
+        val h = this.size.height
+        val path = Path().apply {
+            moveTo(w * 0.18f, h * 0.54f)
+            lineTo(w * 0.41f, h * 0.77f)
+            lineTo(w * 0.84f, h * 0.25f)
+        }
+        drawPath(
+            path = path,
+            color = color,
+            style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
+    }
+}
+
+@Composable
+fun MoreDotsIcon(
+    color: Color,
+    vertical: Boolean = true,
+    size: Dp = 18.dp
+) {
+    Canvas(modifier = Modifier.size(size)) {
+        val r = 1.65.dp.toPx()
+        val w = this.size.width
+        val h = this.size.height
+        val fracs = listOf(0.24f, 0.50f, 0.76f)
+        fracs.forEach { f ->
+            val center = if (vertical) Offset(w * 0.5f, h * f) else Offset(w * f, h * 0.5f)
+            drawCircle(color = color, radius = r, center = center)
+        }
+    }
+}
+
+@Composable
+fun DragHandleIcon(color: Color, size: Dp = 18.dp) {
+    Canvas(modifier = Modifier.size(size)) {
+        val stroke = 1.8.dp.toPx()
+        val w = this.size.width
+        val h = this.size.height
+        val rows = listOf(0.28f, 0.50f, 0.72f)
+        rows.forEach { yFrac ->
+            val y = h * yFrac
+            drawLine(
+                color = color,
+                start = Offset(w * 0.16f, y),
+                end = Offset(w * 0.84f, y),
+                strokeWidth = stroke,
+                cap = StrokeCap.Round
+            )
+        }
+    }
+}
+
+@Composable
+fun ChevronIcon(
+    color: Color,
+    expanded: Boolean,
+    size: Dp = 16.dp
+) {
+    Canvas(modifier = Modifier.size(size)) {
+        val stroke = 1.8.dp.toPx()
+        val w = this.size.width
+        val h = this.size.height
+        val path = Path().apply {
+            if (expanded) {
+                moveTo(w * 0.24f, h * 0.36f)
+                lineTo(w * 0.50f, h * 0.64f)
+                lineTo(w * 0.76f, h * 0.36f)
+            } else {
+                moveTo(w * 0.36f, h * 0.24f)
+                lineTo(w * 0.64f, h * 0.50f)
+                lineTo(w * 0.36f, h * 0.76f)
+            }
+        }
+        drawPath(
+            path = path,
+            color = color,
+            style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
+    }
+}
+
+@Composable
+fun PlusIcon(color: Color, size: Dp = 14.dp) {
+    Canvas(modifier = Modifier.size(size)) {
+        val stroke = 1.9.dp.toPx()
+        val w = this.size.width
+        val h = this.size.height
+        val pad = this.size.minDimension * 0.18f
+        drawLine(
+            color = color,
+            start = Offset(w * 0.5f, pad),
+            end = Offset(w * 0.5f, h - pad),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round
+        )
+        drawLine(
+            color = color,
+            start = Offset(pad, h * 0.5f),
+            end = Offset(w - pad, h * 0.5f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round
+        )
+    }
+}
