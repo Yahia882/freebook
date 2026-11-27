@@ -1051,9 +1051,9 @@ fun ChevronIcon(
 }
 
 @Composable
-fun PlusIcon(color: Color, size: Dp = 14.dp) {
+fun PlusIcon(color: Color, size: Dp = 18.dp) {
     Canvas(modifier = Modifier.size(size)) {
-        val stroke = 1.9.dp.toPx()
+        val stroke = 1.8.dp.toPx()
         val w = this.size.width
         val h = this.size.height
         val pad = this.size.minDimension * 0.18f
@@ -1070,6 +1070,96 @@ fun PlusIcon(color: Color, size: Dp = 14.dp) {
             end = Offset(w - pad, h * 0.5f),
             strokeWidth = stroke,
             cap = StrokeCap.Round
+        )
+    }
+}
+
+@Composable
+fun MenuBarsIcon(color: Color, size: Dp = 18.dp) {
+    Canvas(modifier = Modifier.size(size)) {
+        val stroke = 1.8.dp.toPx()
+        val w = this.size.width
+        val h = this.size.height
+        val padX = w * 0.17f
+        val rows = listOf(0.27f, 0.50f, 0.73f)
+        rows.forEach { yFrac ->
+            val y = h * yFrac
+            drawLine(
+                color = color,
+                start = Offset(padX, y),
+                end = Offset(w - padX, y),
+                strokeWidth = stroke,
+                cap = StrokeCap.Round
+            )
+        }
+    }
+}
+
+@Composable
+fun DragGripDotsIcon(color: Color, size: Dp = 18.dp) {
+    Canvas(modifier = Modifier.size(size)) {
+        val r = 1.4.dp.toPx()
+        val w = this.size.width
+        val h = this.size.height
+        val cols = listOf(0.36f, 0.64f)
+        val rows = listOf(0.24f, 0.50f, 0.76f)
+        for (yFrac in rows) {
+            for (xFrac in cols) {
+                drawCircle(
+                    color = color,
+                    radius = r,
+                    center = Offset(w * xFrac, h * yFrac)
+                )
+            }
+        }
+    }
+}
+
+enum class ChevronDirection {
+    LEFT,
+    RIGHT,
+    UP,
+    DOWN
+}
+
+@Composable
+fun DirectionChevronIcon(
+    direction: ChevronDirection,
+    color: Color,
+    size: Dp = 16.dp
+) {
+    Canvas(modifier = Modifier.size(size)) {
+        val stroke = 2.2.dp.toPx()
+        val w = this.size.width
+        val h = this.size.height
+        val path = Path().apply {
+            when (direction) {
+                ChevronDirection.LEFT -> {
+                    moveTo(w * 0.625f, h * 0.21f)
+                    lineTo(w * 0.335f, h * 0.50f)
+                    lineTo(w * 0.625f, h * 0.79f)
+                }
+                ChevronDirection.RIGHT -> {
+                    moveTo(w * 0.375f, h * 0.21f)
+                    lineTo(w * 0.665f, h * 0.50f)
+                    lineTo(w * 0.375f, h * 0.79f)
+                }
+                ChevronDirection.UP -> {
+                    moveTo(w * 0.21f, h * 0.625f)
+                    lineTo(w * 0.50f, h * 0.335f)
+                    lineTo(w * 0.79f, h * 0.625f)
+                }
+                ChevronDirection.DOWN -> {
+                    moveTo(w * 0.21f, h * 0.375f)
+                    lineTo(w * 0.50f, h * 0.665f)
+                    lineTo(w * 0.79f, h * 0.375f)
+                }
+            }
+        }
+        drawPath(
+            path = path,
+            color = color,
+            style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round)
         )
     }
 }

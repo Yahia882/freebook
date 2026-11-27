@@ -101,6 +101,9 @@ class AudiobookSyncController(
     private var lastAutoCharOffset: Int = -1
     private var lastProgrammaticSeekMs: Long = 0L
     private var highlightSeq: Long = 0L
+    private var lastReaderPageIndex: Int = -1
+    private var lastReaderStartChar: Int = -1
+    private var lastReaderEndChar: Int = -1
 
     private val playerListener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -386,6 +389,55 @@ class AudiobookSyncController(
     }
 
     /**
+     * Called when the reader's visible page / character range changes (after a swipe, scroll, or jump).
+     * If the user manually navigated BACK onto the page where the audiobook is currently playing,
+     * automatically clears [AudiobookUiState.isUserDetachedFromSync] so the return pill hides and sync resumes.
+     */
+    fun onReaderViewportChanged(pageIndex: Int, startChar: Int, endChar: Int) {
+        lastReaderPageIndex = pageIndex
+        lastReaderStartChar = startChar
+        lastReaderEndChar = endChar.coerceAtLeast(startChar)
+
+        val book = activeBook ?: return
+        val state = _uiState.value
+        if (!state.isUserDetachedFromSync || !state.isPlaying) return
+        if (isPositionVisibleInViewport(
+                isPdf = book.isPdf,
+                audioPageIndex = state.liveAudioPageIndex,
+                audioCharOffset = state.liveAudioCharOffset,
+                readerPageIndex = pageIndex,
+                readerStartChar = startChar,
+                readerEndChar = lastReaderEndChar
+            )
+        ) {
+            lastAutoPageIndex = state.liveAudioPageIndex
+            lastAutoCharOffset = state.liveAudioCharOffset
+            _uiState.update {
+                it.copy(
+                    isUserDetachedFromSync = false,
+                    activeHighlight = it.activeHighlight?.copy(shouldAutoFollow = true)
+                )
+            }
+        }
+    }
+
+    private fun isPositionVisibleInViewport(
+        isPdf: Boolean,
+        audioPageIndex: Int,
+        audioCharOffset: Int,
+        readerPageIndex: Int,
+        readerStartChar: Int,
+        readerEndChar: Int
+    ): Boolean {
+        return if (isPdf) {
+            audioPageIndex >= 0 && readerPageIndex >= 0 && audioPageIndex == readerPageIndex
+        } else {
+            audioCharOffset >= 0 && readerStartChar >= 0 &&
+                audioCharOffset in (readerStartChar - 12)..(maxOf(readerEndChar, readerStartChar + 1) + 12)
+        }
+    }
+
+    /**
      * Snaps the reader immediately back to the live audiobook word/page ("Return to Audio").
      */
     fun reattachSyncToAudio() {
@@ -400,6 +452,7 @@ class AudiobookSyncController(
      * current book position (page/charOffset) inside the active mapped chapter or track.
      */
     fun calibrateSyncHere(currentPageIndex: Int, currentCharOffset: Int): Boolean {
+        val book = activeBook ?: return false
         val p = player ?: return false
         val activeIdx = p.currentMediaItemIndex.takeIf { it in orderedTracks.indices } ?: return false
         val track = orderedTracks[activeIdx]
@@ -410,21 +463,42 @@ class AudiobookSyncController(
             computeChapterAudioPositionMs(track.groupId, activeIdx, p.currentPosition)
         }
 
+        val newAnchor = SyncAnchor(
+            audioMs = chapterAudioMs,
+            bookPageIndex = currentPageIndex,
+            bookCharOffset = currentCharOffset
+        )
+        val mergedAnchors = SyncAnchor.mergeMonotonic(
+            existing = mapping.anchors,
+            newAnchor = newAnchor,
+            isPdf = book.isPdf
+        )
+
+        // Immediately update in-memory bundle and last-synced position BEFORE clearing detach state,
+        // so the 40ms sync ticker NEVER reads stale pre-anchor Room state and jumps back a page.
+        val updatedMappings = currentBundle.mappings.map { m ->
+            if (m.id == mapping.id) m.copy(anchors = mergedAnchors) else m
+        }
+        currentBundle = currentBundle.copy(mappings = updatedMappings)
+        lastAutoPageIndex = currentPageIndex
+        lastAutoCharOffset = currentCharOffset
+        lastProgrammaticSeekMs = System.currentTimeMillis()
+        _uiState.update {
+            it.copy(
+                mappings = updatedMappings,
+                isUserDetachedFromSync = false,
+                liveAudioPageIndex = currentPageIndex,
+                liveAudioCharOffset = currentCharOffset,
+                statusNotice = "Synced audio (${formatMs(chapterAudioMs)}) to current position"
+            )
+        }
+
         scope.launch {
             repository.addSyncAnchor(
                 mappingId = mapping.id,
-                anchor = SyncAnchor(
-                    audioMs = chapterAudioMs,
-                    bookPageIndex = currentPageIndex,
-                    bookCharOffset = currentCharOffset
-                )
+                anchor = newAnchor,
+                isPdf = book.isPdf
             )
-            _uiState.update {
-                it.copy(
-                    isUserDetachedFromSync = false,
-                    statusNotice = "Synced audio (${formatMs(chapterAudioMs)}) to current position"
-                )
-            }
         }
         return true
     }
@@ -676,7 +750,7 @@ class AudiobookSyncController(
         val state = _uiState.value
         val book = activeBook ?: return
         val p = player ?: return
-        if (orderedTracks.isEmpty() || !state.followSyncEnabled || state.isUserDetachedFromSync) return
+        if (orderedTracks.isEmpty() || !state.followSyncEnabled) return
 
         val idx = p.currentMediaItemIndex.takeIf { it in orderedTracks.indices } ?: return
         val track = orderedTracks[idx]
@@ -725,8 +799,18 @@ class AudiobookSyncController(
                         val startChar = timings.startChars[found]
                         val endChar = timings.endChars[found]
 
+                        val wasDetached = _uiState.value.isUserDetachedFromSync
+                        val caughtUpToViewport = wasDetached && isPositionVisibleInViewport(
+                            isPdf = book.isPdf,
+                            audioPageIndex = pageIdx,
+                            audioCharOffset = startChar,
+                            readerPageIndex = lastReaderPageIndex,
+                            readerStartChar = lastReaderStartChar,
+                            readerEndChar = lastReaderEndChar
+                        )
+                        val isStillDetached = wasDetached && !caughtUpToViewport
                         val shouldFollowNow = forcePageJump ||
-                            (_uiState.value.followSyncEnabled && !_uiState.value.isUserDetachedFromSync)
+                            (_uiState.value.followSyncEnabled && !isStillDetached)
                         val hl = ActiveWordHighlight(
                             source = ActiveHighlightSource.AUDIOBOOK,
                             pageIndex = pageIdx,
@@ -738,9 +822,17 @@ class AudiobookSyncController(
                             shouldAutoFollow = shouldFollowNow,
                             sequenceId = ++highlightSeq
                         )
-                        _uiState.update { it.copy(activeHighlight = hl) }
+                        _uiState.update {
+                            it.copy(
+                                activeHighlight = hl,
+                                liveAudioPageIndex = pageIdx,
+                                liveAudioCharOffset = startChar,
+                                isUserDetachedFromSync = if (caughtUpToViewport) false else it.isUserDetachedFromSync
+                            )
+                        }
                         if (shouldFollowNow && (forcePageJump || pageIdx != lastAutoPageIndex)) {
                             lastAutoPageIndex = pageIdx
+                            lastAutoCharOffset = startChar
                             lastProgrammaticSeekMs = System.currentTimeMillis()
                         }
                         book.seekToPosition(
@@ -766,6 +858,35 @@ class AudiobookSyncController(
                 dist = dist
             )
             val (targetPage, targetChar) = dist.resolveWeightToPosition(targetWeight)
+
+            val prevLivePage = _uiState.value.liveAudioPageIndex
+            val prevLiveChar = _uiState.value.liveAudioCharOffset
+            val livePositionChanged = targetPage != prevLivePage || targetChar != prevLiveChar
+            val wasDetached = _uiState.value.isUserDetachedFromSync
+            // Auto-reattach if live audio naturally crossed into the page the user is viewing
+            val caughtUpToViewport = wasDetached && livePositionChanged && isPositionVisibleInViewport(
+                isPdf = book.isPdf,
+                audioPageIndex = targetPage,
+                audioCharOffset = targetChar,
+                readerPageIndex = lastReaderPageIndex,
+                readerStartChar = lastReaderStartChar,
+                readerEndChar = lastReaderEndChar
+            )
+            val isStillDetached = wasDetached && !caughtUpToViewport
+
+            if (livePositionChanged || caughtUpToViewport) {
+                _uiState.update {
+                    it.copy(
+                        liveAudioPageIndex = targetPage,
+                        liveAudioCharOffset = targetChar,
+                        isUserDetachedFromSync = if (caughtUpToViewport) false else it.isUserDetachedFromSync
+                    )
+                }
+            }
+
+            if (isStillDetached && !forcePageJump) {
+                return@launch
+            }
 
             val changed = if (book.isPdf) {
                 targetPage != lastAutoPageIndex

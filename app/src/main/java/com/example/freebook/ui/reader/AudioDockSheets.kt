@@ -85,10 +85,10 @@ import com.example.freebook.model.AudiobookUiState
 import com.example.freebook.model.TtsModelDescriptor
 import com.example.freebook.model.TtsUiState
 import com.example.freebook.model.TtsVoiceInfo
-import com.example.freebook.ui.components.CheckmarkIcon
+import com.example.freebook.ui.components.AudioWaveformIcon
 import com.example.freebook.ui.components.ChevronIcon
-import com.example.freebook.ui.components.DragHandleIcon
-import com.example.freebook.ui.components.MoreDotsIcon
+import com.example.freebook.ui.components.DragGripDotsIcon
+import com.example.freebook.ui.components.MenuBarsIcon
 import com.example.freebook.ui.components.PlusIcon
 import com.example.freebook.ui.theme.BookFreePalette
 import com.example.freebook.ui.theme.LocalBookFreePalette
@@ -98,7 +98,35 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 private val BookFreePalette.audioAccent: Color
-    get() = if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
+    get() = if (isDark) Color(0xFF7DD3FC) else Color(0xFF0284C7)
+
+private val BookFreePalette.onAudioAccent: Color
+    get() = if (isDark) Color(0xFF0B1219) else Color.White
+
+private val BookFreePalette.sheetDividerColor: Color
+    get() = if (isDark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.08f)
+
+private val BookFreePalette.sheetDropdownSurface: Color
+    get() = if (isDark) Color(0xFF26262B) else Color(0xFFFFFFFF)
+
+@Composable
+private fun MinimalSheetDragHandle() {
+    val palette = LocalBookFreePalette.current
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 10.dp, bottom = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .width(36.dp)
+                .height(4.dp)
+                .clip(CircleShape)
+                .background(palette.textMuted.copy(alpha = 0.45f))
+        )
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -774,8 +802,11 @@ fun AudiobookManagerSheet(
             }
         },
         sheetState = sheetState,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
         containerColor = palette.menuSurface,
-        contentColor = palette.textPrimary
+        contentColor = palette.textPrimary,
+        tonalElevation = 0.dp,
+        dragHandle = { MinimalSheetDragHandle() }
     ) {
         Column(
             modifier = Modifier
@@ -783,139 +814,91 @@ fun AudiobookManagerSheet(
                 .navigationBarsPadding()
         ) {
             // =================================================================
-            // CLEAN LEFT-ALIGNED HEADER (no exit button)
+            // ULTRA-MINIMAL HEADER: "Chapters" on left, matching "+" & bar icon on right
             // =================================================================
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .padding(bottom = 14.dp),
+                    .padding(top = 2.dp, bottom = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 if (isReorderMode) {
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(end = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(2.dp)
-                    ) {
-                        Text(
-                            text = "Reorder Chapters",
-                            fontSize = 19.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = palette.textPrimary
-                        )
-                        Text(
-                            text = "Hold and drag ≡ anywhere, including into categories",
-                            fontSize = 12.sp,
-                            color = palette.textMuted,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                    Text(
+                        text = "Reorder",
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = palette.textPrimary
+                    )
 
                     Box(
                         modifier = Modifier
                             .clip(CircleShape)
-                            .background(palette.audioAccent)
+                            .background(palette.audioAccent.copy(alpha = 0.18f))
                             .clickable {
                                 isReorderMode = false
                                 draggingKey = null
                                 dragOffsetY = 0f
                             }
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                            .padding(horizontal = 16.dp, vertical = 7.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
                             text = "Done",
                             fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold,
-                            color = Color.White
+                            color = palette.audioAccent
                         )
                     }
                 } else {
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(end = 10.dp),
-                        verticalArrangement = Arrangement.spacedBy(2.dp)
-                    ) {
-                        Text(
-                            text = "Chapters",
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = palette.textPrimary,
-                            maxLines = 1
-                        )
-                        val count = audiobookState.tracks.size
-                        val subtitle = if (audiobookState.hasAudio) {
-                            val syncTag = if (!audiobookState.followSyncEnabled) " · Sync Off" else ""
-                            "$count ${if (count == 1) "chapter" else "chapters"} · ${formatChapterTimestamp(audiobookState.totalDurationMs)}$syncTag"
-                        } else {
-                            "Import audio files to start listening"
-                        }
-                        Text(
-                            text = subtitle,
-                            fontSize = 12.sp,
-                            color = palette.textMuted,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = TextStyle(fontFeatureSettings = "tnum")
-                        )
-                    }
+                    Text(
+                        text = "Chapters",
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = palette.textPrimary,
+                        maxLines = 1
+                    )
 
+                    val headerIconColor = palette.textPrimary.copy(alpha = 0.88f)
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        // Primary "Import Audio" pill on far right before More Options
-                        Row(
+                        // Add / Import Audio icon button (exact same size & color as menu bar icon)
+                        Box(
                             modifier = Modifier
+                                .size(36.dp)
                                 .clip(CircleShape)
-                                .background(palette.audioAccent.copy(alpha = 0.14f))
-                                .border(
-                                    width = 1.dp,
-                                    color = palette.audioAccent.copy(alpha = 0.35f),
-                                    shape = CircleShape
-                                )
-                                .clickable { onImportAudioFiles(null) }
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                .clickable { onImportAudioFiles(null) },
+                            contentAlignment = Alignment.Center
                         ) {
-                            PlusIcon(color = palette.audioAccent, size = 12.dp)
-                            Text(
-                                text = "Import Audio",
-                                fontSize = 12.5.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = palette.audioAccent,
-                                maxLines = 1
+                            PlusIcon(
+                                color = headerIconColor,
+                                size = 18.dp
                             )
                         }
 
-                        // Header More Options icon button (Auto-Sync, Add Category, Anchor, Auto-Match, Word Pack)
+                        // Header Bar Menu icon button (Auto-Sync, Add Category, Anchor, Auto-Match, Word Pack)
                         Box {
                             Box(
                                 modifier = Modifier
                                     .size(36.dp)
                                     .clip(CircleShape)
-                                    .background(palette.surfaceColor)
-                                    .border(1.dp, palette.borderSubtle, CircleShape)
                                     .clickable { showHeaderMenu = true },
                                 contentAlignment = Alignment.Center
                             ) {
-                                MoreDotsIcon(
-                                    color = palette.textPrimary,
-                                    vertical = true,
-                                    size = 17.dp
+                                MenuBarsIcon(
+                                    color = headerIconColor,
+                                    size = 18.dp
                                 )
                             }
 
                             DropdownMenu(
                                 expanded = showHeaderMenu,
                                 onDismissRequest = { showHeaderMenu = false },
-                                containerColor = palette.menuSurface
+                                containerColor = palette.sheetDropdownSurface,
+                                shape = RoundedCornerShape(14.dp)
                             ) {
                                 DropdownMenuItem(
                                     text = {
@@ -1070,10 +1053,10 @@ fun AudiobookManagerSheet(
                 }
             }
 
-            HorizontalDivider(color = palette.borderSubtle.copy(alpha = 0.7f))
+            HorizontalDivider(thickness = 0.5.dp, color = palette.sheetDividerColor)
 
             // =================================================================
-            // CHAPTERS LIST (Reference aesthetic: clean flat rows + dividers)
+            // CHAPTERS LIST (Ultra-minimalist flat rows + hairline dividers)
             // =================================================================
             if (displayedRows.isEmpty()) {
                 Column(
@@ -1081,16 +1064,16 @@ fun AudiobookManagerSheet(
                         .fillMaxWidth()
                         .padding(horizontal = 28.dp, vertical = 42.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
-                        text = "No audio chapters yet",
-                        fontSize = 15.5.sp,
+                        text = "No audio chapters",
+                        fontSize = 15.sp,
                         fontWeight = FontWeight.Medium,
                         color = palette.textPrimary
                     )
                     Text(
-                        text = "Tap \"Import Audio\" above to add MP3, M4B, or M4A files for this book.",
+                        text = "Tap + to import audio files for this book.",
                         fontSize = 13.sp,
                         color = palette.textMuted,
                         textAlign = TextAlign.Center
@@ -1221,7 +1204,7 @@ fun AudiobookManagerSheet(
                                 }
                             }
                             .background(
-                                if (isDraggingThis) palette.surfaceColor else Color.Transparent
+                                if (isDraggingThis) palette.textPrimary.copy(alpha = 0.08f) else Color.Transparent
                             )
 
                         when (row) {
@@ -1235,10 +1218,6 @@ fun AudiobookManagerSheet(
                                 val group = when (row) {
                                     is AudiobookListRow.StandaloneTrack -> row.group
                                     is AudiobookListRow.CategoryTrack -> row.group
-                                }
-                                val startOffsetMs = when (row) {
-                                    is AudiobookListRow.StandaloneTrack -> row.startOffsetMs
-                                    is AudiobookListRow.CategoryTrack -> row.startOffsetMs
                                 }
                                 val chapterNumber = when (row) {
                                     is AudiobookListRow.StandaloneTrack -> row.chapterNumber
@@ -1261,7 +1240,6 @@ fun AudiobookManagerSheet(
 
                                 CleanChapterTrackRow(
                                     displayTitle = formatChapterDisplayTitle(chapterNumber, track.title),
-                                    startOffsetMs = startOffsetMs,
                                     durationMs = track.effectiveDurationMs,
                                     mappingLabel = if (parentCatMapping == null) {
                                         ownTrackMapping?.let { buildMappingStatusLabel(it, isPdfBook) }
@@ -1273,6 +1251,7 @@ fun AudiobookManagerSheet(
                                     alignmentProvider = alignment?.provider ?: AlignmentProvider.NONE,
                                     alignmentProgress = alignment?.progressPercent ?: 0,
                                     isActive = isActive,
+                                    isPlaying = audiobookState.isPlaying,
                                     isEmbeddedInCategory = isEmbedded,
                                     isReorderMode = isReorderMode,
                                     isLocalPackInstalled = audiobookState.isLocalPackInstalled,
@@ -1309,10 +1288,11 @@ fun AudiobookManagerSheet(
                                 )
                                 HorizontalDivider(
                                     modifier = Modifier.padding(
-                                        start = if (isEmbedded) 36.dp else 20.dp,
+                                        start = if (isEmbedded) 38.dp else 20.dp,
                                         end = 20.dp
                                     ),
-                                    color = palette.borderSubtle.copy(alpha = if (isEmbedded) 0.4f else 0.55f)
+                                    thickness = 0.5.dp,
+                                    color = palette.sheetDividerColor
                                 )
                             }
 
@@ -1323,12 +1303,12 @@ fun AudiobookManagerSheet(
 
                                 CleanCategoryHeaderRow(
                                     group = row.group,
-                                    trackCount = row.trackCount,
                                     totalDurationMs = row.totalDurationMs,
                                     categoryMappingLabel = catMapping?.let { buildMappingStatusLabel(it, isPdfBook) },
                                     alignmentStatus = catAlignment?.status ?: AlignmentStatus.NONE,
                                     alignmentProgress = catAlignment?.progressPercent ?: 0,
-                                    showActiveCheckmark = row.group.isCollapsed && containsActiveTrack,
+                                    showActiveWaveform = row.group.isCollapsed && containsActiveTrack,
+                                    isPlaying = audiobookState.isPlaying,
                                     isReorderMode = isReorderMode,
                                     isLocalPackInstalled = audiobookState.isLocalPackInstalled,
                                     hasCategoryMapping = catMapping != null,
@@ -1368,7 +1348,8 @@ fun AudiobookManagerSheet(
                                 )
                                 HorizontalDivider(
                                     modifier = Modifier.padding(horizontal = 20.dp),
-                                    color = palette.borderSubtle.copy(alpha = 0.55f)
+                                    thickness = 0.5.dp,
+                                    color = palette.sheetDividerColor
                                 )
                             }
 
@@ -1379,22 +1360,23 @@ fun AudiobookManagerSheet(
                                         .clickable(enabled = !isReorderMode) {
                                             onImportAudioFiles(row.group.id)
                                         }
-                                        .padding(start = 36.dp, end = 20.dp, top = 12.dp, bottom = 12.dp),
+                                        .padding(start = 38.dp, end = 20.dp, top = 12.dp, bottom = 12.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
                                         text = if (isReorderMode) {
-                                            "Drop chapters here to place inside \"${row.group.title}\""
+                                            "Drop here to add to ${row.group.title}"
                                         } else {
-                                            "No chapters in this category · Tap to import audio"
+                                            "Empty · Tap to add audio"
                                         },
                                         fontSize = 12.5.sp,
-                                        color = if (isReorderMode) palette.audioAccent else palette.textMuted
+                                        color = if (isReorderMode) palette.audioAccent else palette.textMuted.copy(alpha = 0.75f)
                                     )
                                 }
                                 HorizontalDivider(
-                                    modifier = Modifier.padding(horizontal = 20.dp),
-                                    color = palette.borderSubtle.copy(alpha = 0.45f)
+                                    modifier = Modifier.padding(start = 38.dp, end = 20.dp),
+                                    thickness = 0.5.dp,
+                                    color = palette.sheetDividerColor
                                 )
                             }
 
@@ -1587,7 +1569,6 @@ private fun buildMappingStatusLabel(mapping: AudiobookChapterMapping, isPdfBook:
 @Composable
 private fun CleanChapterTrackRow(
     displayTitle: String,
-    startOffsetMs: Long,
     durationMs: Long,
     mappingLabel: String?,
     overriddenByCategoryTitle: String?,
@@ -1595,6 +1576,7 @@ private fun CleanChapterTrackRow(
     alignmentProvider: AlignmentProvider,
     alignmentProgress: Int,
     isActive: Boolean,
+    isPlaying: Boolean,
     isEmbeddedInCategory: Boolean,
     isReorderMode: Boolean,
     isLocalPackInstalled: Boolean,
@@ -1626,56 +1608,51 @@ private fun CleanChapterTrackRow(
                 }
             )
             .padding(
-                start = if (isEmbeddedInCategory) 28.dp else 20.dp,
+                // Pure clean indentation shows category membership without any vertical line
+                start = if (isEmbeddedInCategory) 38.dp else 20.dp,
                 end = 12.dp,
                 top = 13.dp,
                 bottom = 13.dp
             ),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        if (isEmbeddedInCategory) {
-            Box(
-                modifier = Modifier
-                    .width(2.dp)
-                    .height(32.dp)
-                    .clip(CircleShape)
-                    .background(
-                        if (isActive) palette.audioAccent else palette.borderSubtle.copy(alpha = 0.85f)
-                    )
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-        }
-
         Column(
             modifier = Modifier
                 .weight(1f)
                 .padding(end = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(3.dp)
+            verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
-            Text(
-                text = displayTitle,
-                fontSize = 15.5.sp,
-                fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
-                color = palette.textPrimary,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-
-            Text(
-                text = "Start: ${formatChapterTimestamp(startOffsetMs)} - Duration: ${formatChapterTimestamp(durationMs)}",
-                fontSize = 12.5.sp,
-                color = palette.textMuted,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = TextStyle(fontFeatureSettings = "tnum")
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = displayTitle,
+                    fontSize = 15.sp,
+                    fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Medium,
+                    color = if (isActive) palette.textPrimary else palette.textPrimary.copy(alpha = 0.90f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                if (durationMs > 0L) {
+                    Text(
+                        text = formatCompactDuration(durationMs),
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.textMuted,
+                        maxLines = 1,
+                        style = TextStyle(fontFeatureSettings = "tnum")
+                    )
+                }
+            }
 
             when {
                 overriddenByCategoryTitle != null -> {
                     Text(
-                        text = "Synced via \"$overriddenByCategoryTitle\"",
-                        fontSize = 11.5.sp,
-                        color = palette.textMuted.copy(alpha = 0.85f),
+                        text = "Synced via $overriddenByCategoryTitle",
+                        fontSize = 11.sp,
+                        color = palette.textMuted.copy(alpha = 0.72f),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -1689,13 +1666,13 @@ private fun CleanChapterTrackRow(
                         else -> ""
                     }
                     val labelColor = when (alignmentStatus) {
-                        AlignmentStatus.READY -> Color(0xFF22C55E)
+                        AlignmentStatus.READY -> Color(0xFF4ADE80).copy(alpha = 0.85f)
                         AlignmentStatus.NEEDS_CLOUD_RECOMMENDED -> Color(0xFFF59E0B)
-                        else -> palette.audioAccent
+                        else -> palette.audioAccent.copy(alpha = 0.82f)
                     }
                     Text(
                         text = "$mappingLabel$statusSuffix",
-                        fontSize = 11.5.sp,
+                        fontSize = 11.sp,
                         color = labelColor,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -1704,37 +1681,39 @@ private fun CleanChapterTrackRow(
             }
         }
 
-        // Active checkmark (reference screenshot style)
+        // Subtle Voice/Waveform icon ONLY for the currently playing / active track
         if (isActive && !isReorderMode) {
             Box(
-                modifier = Modifier.padding(end = 4.dp),
+                modifier = Modifier.padding(end = 6.dp),
                 contentAlignment = Alignment.Center
             ) {
-                CheckmarkIcon(color = palette.audioAccent, size = 18.dp)
+                AudioWaveformIcon(
+                    color = if (isPlaying) palette.audioAccent else palette.textPrimary.copy(alpha = 0.55f),
+                    size = 16.dp
+                )
             }
         }
 
         if (isReorderMode) {
             Box(
                 modifier = dragHandleModifier
-                    .size(42.dp)
+                    .size(40.dp)
                     .clip(CircleShape),
                 contentAlignment = Alignment.Center
             ) {
-                DragHandleIcon(color = palette.textSecondary, size = 18.dp)
+                DragGripDotsIcon(color = palette.textSecondary, size = 18.dp)
             }
         } else {
             Box {
                 Box(
                     modifier = Modifier
-                        .size(38.dp)
+                        .size(36.dp)
                         .clip(CircleShape)
                         .clickable { showRowMenu = true },
                     contentAlignment = Alignment.Center
                 ) {
-                    MoreDotsIcon(
+                    MenuBarsIcon(
                         color = palette.textMuted,
-                        vertical = true,
                         size = 16.dp
                     )
                 }
@@ -1742,7 +1721,8 @@ private fun CleanChapterTrackRow(
                 DropdownMenu(
                     expanded = showRowMenu,
                     onDismissRequest = { showRowMenu = false },
-                    containerColor = palette.menuSurface
+                    containerColor = palette.sheetDropdownSurface,
+                    shape = RoundedCornerShape(14.dp)
                 ) {
                     DropdownMenuItem(
                         text = {
@@ -1809,7 +1789,7 @@ private fun CleanChapterTrackRow(
                         }
                     )
 
-                    HorizontalDivider(color = palette.borderSubtle.copy(alpha = 0.6f))
+                    HorizontalDivider(thickness = 0.5.dp, color = palette.sheetDividerColor)
 
                     DropdownMenuItem(
                         text = {
@@ -1833,12 +1813,12 @@ private fun CleanChapterTrackRow(
 @Composable
 private fun CleanCategoryHeaderRow(
     group: AudiobookGroup,
-    trackCount: Int,
     totalDurationMs: Long,
     categoryMappingLabel: String?,
     alignmentStatus: AlignmentStatus,
     alignmentProgress: Int,
-    showActiveCheckmark: Boolean,
+    showActiveWaveform: Boolean,
+    isPlaying: Boolean,
     isReorderMode: Boolean,
     isLocalPackInstalled: Boolean,
     hasCategoryMapping: Boolean,
@@ -1858,19 +1838,18 @@ private fun CleanCategoryHeaderRow(
     Row(
         modifier = rowModifier
             .fillMaxWidth()
-            .background(palette.surfaceColor.copy(alpha = 0.48f))
             .clickable(onClick = onToggleCollapse)
-            .padding(start = 16.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
+            .padding(start = 16.dp, end = 12.dp, top = 13.dp, bottom = 13.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
-            modifier = Modifier.size(24.dp),
+            modifier = Modifier.size(22.dp),
             contentAlignment = Alignment.Center
         ) {
             ChevronIcon(
                 color = palette.textSecondary,
                 expanded = !group.isCollapsed,
-                size = 15.dp
+                size = 14.dp
             )
         }
         Spacer(modifier = Modifier.width(6.dp))
@@ -1881,65 +1860,76 @@ private fun CleanCategoryHeaderRow(
                 .padding(end = 8.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
-            Text(
-                text = group.title,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = palette.textPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = "$trackCount ${if (trackCount == 1) "chapter" else "chapters"} · Duration: ${formatChapterTimestamp(totalDurationMs)}",
-                fontSize = 12.sp,
-                color = palette.textMuted,
-                maxLines = 1,
-                style = TextStyle(fontFeatureSettings = "tnum")
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = group.title,
+                    fontSize = 15.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = palette.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                if (totalDurationMs > 0L) {
+                    Text(
+                        text = formatCompactDuration(totalDurationMs),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.textMuted,
+                        maxLines = 1,
+                        style = TextStyle(fontFeatureSettings = "tnum")
+                    )
+                }
+            }
             if (categoryMappingLabel != null) {
                 val alignSuffix = when (alignmentStatus) {
                     AlignmentStatus.RUNNING, AlignmentStatus.QUEUED -> " · Aligning $alignmentProgress%"
                     AlignmentStatus.READY -> " · Word Synced"
                     AlignmentStatus.NEEDS_CLOUD_RECOMMENDED -> " · Edition Mismatch"
-                    else -> " · Overrides tracks"
+                    else -> ""
                 }
                 Text(
                     text = "$categoryMappingLabel$alignSuffix",
-                    fontSize = 11.5.sp,
-                    color = if (alignmentStatus == AlignmentStatus.READY) Color(0xFF22C55E) else palette.audioAccent,
+                    fontSize = 11.sp,
+                    color = if (alignmentStatus == AlignmentStatus.READY) Color(0xFF4ADE80).copy(alpha = 0.85f) else palette.audioAccent.copy(alpha = 0.85f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
         }
 
-        if (showActiveCheckmark && !isReorderMode) {
-            Box(modifier = Modifier.padding(end = 4.dp)) {
-                CheckmarkIcon(color = palette.audioAccent, size = 18.dp)
+        if (showActiveWaveform && !isReorderMode) {
+            Box(modifier = Modifier.padding(end = 6.dp)) {
+                AudioWaveformIcon(
+                    color = if (isPlaying) palette.audioAccent else palette.textPrimary.copy(alpha = 0.55f),
+                    size = 16.dp
+                )
             }
         }
 
         if (isReorderMode) {
             Box(
                 modifier = dragHandleModifier
-                    .size(42.dp)
+                    .size(40.dp)
                     .clip(CircleShape),
                 contentAlignment = Alignment.Center
             ) {
-                DragHandleIcon(color = palette.textPrimary, size = 18.dp)
+                DragGripDotsIcon(color = palette.textPrimary, size = 18.dp)
             }
         } else {
             Box {
                 Box(
                     modifier = Modifier
-                        .size(38.dp)
+                        .size(36.dp)
                         .clip(CircleShape)
                         .clickable { showCategoryMenu = true },
                     contentAlignment = Alignment.Center
                 ) {
-                    MoreDotsIcon(
+                    MenuBarsIcon(
                         color = palette.textSecondary,
-                        vertical = true,
                         size = 16.dp
                     )
                 }
@@ -1947,7 +1937,8 @@ private fun CleanCategoryHeaderRow(
                 DropdownMenu(
                     expanded = showCategoryMenu,
                     onDismissRequest = { showCategoryMenu = false },
-                    containerColor = palette.menuSurface
+                    containerColor = palette.sheetDropdownSurface,
+                    shape = RoundedCornerShape(14.dp)
                 ) {
                     DropdownMenuItem(
                         text = {
@@ -2031,7 +2022,7 @@ private fun CleanCategoryHeaderRow(
                         }
                     )
 
-                    HorizontalDivider(color = palette.borderSubtle.copy(alpha = 0.6f))
+                    HorizontalDivider(thickness = 0.5.dp, color = palette.sheetDividerColor)
 
                     DropdownMenuItem(
                         text = {
@@ -2072,8 +2063,11 @@ private fun WordHighlightingPackSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
         containerColor = palette.menuSurface,
-        contentColor = palette.textPrimary
+        contentColor = palette.textPrimary,
+        tonalElevation = 0.dp,
+        dragHandle = { MinimalSheetDragHandle() }
     ) {
         Column(
             modifier = Modifier
@@ -2219,7 +2213,7 @@ private fun WordHighlightingPackSheet(
                             modifier = Modifier.weight(1.2f),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = palette.audioAccent,
-                                contentColor = Color.White
+                                contentColor = palette.onAudioAccent
                             )
                         ) {
                             Text("Download Pack", fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
@@ -2320,16 +2314,19 @@ private fun AudiobookRangeMapSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
         containerColor = palette.menuSurface,
-        contentColor = palette.textPrimary
+        contentColor = palette.textPrimary,
+        tonalElevation = 0.dp,
+        dragHandle = { MinimalSheetDragHandle() }
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
                 .padding(horizontal = 20.dp)
-                .padding(bottom = 22.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(bottom = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             // Header
             Row(
@@ -2339,7 +2336,7 @@ private fun AudiobookRangeMapSheet(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = if (isCategoryTarget) "Map Category to Content" else "Map to Content",
+                        text = if (isCategoryTarget) "Map Category" else "Map to Content",
                         fontSize = 19.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = palette.textPrimary
@@ -2373,37 +2370,19 @@ private fun AudiobookRangeMapSheet(
                 }
             }
 
-            // Precedence context notice (Category overrides individual tracks)
+            // Compact precedence notice (never crowds the Save button)
             if (isCategoryTarget) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(palette.audioAccent.copy(alpha = 0.10f))
-                        .border(1.dp, palette.audioAccent.copy(alpha = 0.25f), RoundedCornerShape(10.dp))
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                ) {
-                    Text(
-                        text = "Mapping this category applies across all audio files inside it and overrides their individual mappings.",
-                        fontSize = 12.sp,
-                        color = palette.textSecondary
-                    )
-                }
+                Text(
+                    text = "Applies across all audio files inside this category and overrides their individual mappings.",
+                    fontSize = 11.5.sp,
+                    color = palette.audioAccent.copy(alpha = 0.85f)
+                )
             } else if (parentOverrideCategoryTitle != null) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(Color(0xFFF59E0B).copy(alpha = 0.12f))
-                        .border(1.dp, Color(0xFFF59E0B).copy(alpha = 0.35f), RoundedCornerShape(10.dp))
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                ) {
-                    Text(
-                        text = "Category \"$parentOverrideCategoryTitle\" is currently mapped and overrides this track. Your individual mapping here will take effect if you unmap the category.",
-                        fontSize = 12.sp,
-                        color = palette.textSecondary
-                    )
-                }
+                Text(
+                    text = "Category \"$parentOverrideCategoryTitle\" currently overrides this file until unmapped.",
+                    fontSize = 11.5.sp,
+                    color = Color(0xFFF59E0B)
+                )
             }
 
             // Optional PDF toggle: Contents vs Manual Pages
@@ -2486,7 +2465,7 @@ private fun AudiobookRangeMapSheet(
                         modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = palette.audioAccent,
-                            contentColor = Color.White
+                            contentColor = palette.onAudioAccent
                         )
                     ) {
                         Text("Save Page Range", fontWeight = FontWeight.SemiBold)
@@ -2507,7 +2486,7 @@ private fun AudiobookRangeMapSheet(
                         modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = palette.audioAccent,
-                            contentColor = Color.White
+                            contentColor = palette.onAudioAccent
                         )
                     ) {
                         Text("Map from Current Position", fontWeight = FontWeight.SemiBold)
@@ -2579,13 +2558,16 @@ private fun AudiobookRangeMapSheet(
                 val handlePillHeightPx = with(density) { 24.dp.toPx() }
                 val listContentTopPadPx = with(density) { 14.dp.toPx() }
 
+                // Weight(1f, fill = false) guarantees the pinned Save Mapping footer below
+                // ALWAYS stays visible on every screen height (including Category mapping).
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 360.dp)
+                        .weight(1f, fill = false)
+                        .heightIn(min = 140.dp, max = 360.dp)
                         .clip(RoundedCornerShape(14.dp))
-                        .background(palette.surfaceColor.copy(alpha = 0.45f))
-                        .border(1.dp, palette.borderSubtle, RoundedCornerShape(14.dp))
+                        .background(palette.surfaceColor.copy(alpha = 0.35f))
+                        .border(1.dp, palette.sheetDividerColor, RoundedCornerShape(14.dp))
                 ) {
                     LazyColumn(
                         state = listState,
@@ -2859,7 +2841,7 @@ private fun AudiobookRangeMapSheet(
                             },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = palette.audioAccent,
-                                contentColor = Color.White
+                                contentColor = palette.onAudioAccent
                             ),
                             contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp)
                         ) {
@@ -2994,7 +2976,7 @@ private fun FloatingRangeHandlePill(
                 fontSize = 10.5.sp,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 0.5.sp,
-                color = Color.White
+                color = palette.onAudioAccent
             )
         }
     }

@@ -99,6 +99,8 @@ data class TtsUiState(
     val currentTimeLabel: String = "0:00",
     val remainingTimeLabel: String = "0:00",
     val isUserDetachedFromSync: Boolean = false,
+    val liveTtsPageIndex: Int = -1,
+    val liveTtsCharOffset: Int = -1,
     val missingLanguageTag: String? = null,
     val errorMessage: String? = null
 ) {
@@ -182,6 +184,24 @@ data class SyncAnchor(
                     }
                 }.sortedBy { it.audioMs }
             }.getOrDefault(emptyList())
+        }
+
+        /**
+         * Inserts [newAnchor] while replacing nearby anchors (<3s) and pruning any stale anchors
+         * whose book position conflicts with monotonic forward progression relative to [newAnchor].
+         */
+        fun mergeMonotonic(
+            existing: List<SyncAnchor>,
+            newAnchor: SyncAnchor,
+            isPdf: Boolean
+        ): List<SyncAnchor> {
+            val newPos = if (isPdf) newAnchor.bookPageIndex else newAnchor.bookCharOffset
+            val filtered = existing.filter { a ->
+                if (kotlin.math.abs(a.audioMs - newAnchor.audioMs) < 3_000L) return@filter false
+                val aPos = if (isPdf) a.bookPageIndex else a.bookCharOffset
+                if (a.audioMs < newAnchor.audioMs) aPos <= newPos else aPos >= newPos
+            }
+            return (filtered + newAnchor).sortedBy { it.audioMs }
         }
     }
 }
@@ -416,6 +436,8 @@ data class AudiobookUiState(
     val sleepTimerRemainingMs: Long? = null,
     val followSyncEnabled: Boolean = true,
     val isUserDetachedFromSync: Boolean = false,
+    val liveAudioPageIndex: Int = -1,
+    val liveAudioCharOffset: Int = -1,
     val activeHighlight: ActiveWordHighlight? = null,
     val isLocalPackInstalled: Boolean = false,
     val localPackDownloadProgress: Int? = null,

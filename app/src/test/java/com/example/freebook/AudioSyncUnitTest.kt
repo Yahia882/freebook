@@ -6,9 +6,13 @@ import com.example.freebook.audio.sync.ChapterWeightDistribution
 import com.example.freebook.audio.sync.EpubSyncableBook
 import com.example.freebook.model.Book
 import com.example.freebook.model.PackedWordTimings
+import com.example.freebook.model.SyncAnchor
+import com.example.freebook.ui.reader.ReturnToAudioEdge
+import com.example.freebook.ui.reader.resolveReturnToAudioEdge
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -106,6 +110,50 @@ class AudioSyncUnitTest {
         assertEquals(10 to 0, dist.resolveWeightToPosition(150))
         assertEquals(11 to 0, dist.resolveWeightToPosition(500))
         assertEquals(12 to 0, dist.resolveWeightToPosition(900))
+
+        // Critical Sync Anchor invariant: pinning an anchor on page N must resolve back to page N,
+        // never off-by-one back to the previous page N - 1!
+        assertEquals(10 to 0, dist.resolveWeightToPosition(dist.weightAtPosition(10, 0)))
+        assertEquals(11 to 0, dist.resolveWeightToPosition(dist.weightAtPosition(11, 0)))
+        assertEquals(12 to 0, dist.resolveWeightToPosition(dist.weightAtPosition(12, 0)))
+    }
+
+    @Test
+    fun chapterWeightDistribution_epubSyncAnchorRoundTripsExactMidSegmentCharOffset() {
+        val dist = ChapterWeightDistribution(
+            isPdf = false,
+            isScannedFallback = false,
+            startPageIndex = 0,
+            endPageIndex = 0,
+            startCharOffset = 1000,
+            endCharOffset = 2000,
+            cumulativeWeights = intArrayOf(250, 600, 1000),
+            segmentPositions = intArrayOf(1000, 1300, 1650)
+        )
+
+        // Exact segment boundary
+        val boundaryWeight = dist.weightAtPosition(0, 1300)
+        assertEquals(0 to 1300, dist.resolveWeightToPosition(boundaryWeight))
+
+        // Mid-segment char offset (must stay on current page/offset instead of jumping backward)
+        val midWeight = dist.weightAtPosition(0, 1520)
+        val (_, resolvedMid) = dist.resolveWeightToPosition(midWeight)
+        assertTrue("Expected resolved char ($resolvedMid) near 1520", kotlin.math.abs(resolvedMid - 1520) <= 5)
+    }
+
+    @Test
+    fun syncAnchor_mergeMonotonicPrunesConflictingStaleAnchors() {
+        val existing = listOf(
+            SyncAnchor(audioMs = 10_000L, bookPageIndex = 12, bookCharOffset = 0),
+            SyncAnchor(audioMs = 40_000L, bookPageIndex = 18, bookCharOffset = 0)
+        )
+        // Re-anchoring at 25s on page 10 invalidates the earlier (10s -> p12) anchor while keeping (40s -> p18)
+        val merged = SyncAnchor.mergeMonotonic(
+            existing = existing,
+            newAnchor = SyncAnchor(audioMs = 25_000L, bookPageIndex = 10, bookCharOffset = 0),
+            isPdf = true
+        )
+        assertEquals(listOf(25_000L to 10, 40_000L to 18), merged.map { it.audioMs to it.bookPageIndex })
     }
 
     @Test
@@ -168,5 +216,78 @@ class AudioSyncUnitTest {
         assertEquals(0, chunks.first().docStartChar)
         assertTrue(chunks.first().spokenText.startsWith("Chapter 1"))
         assertTrue(chunks.last().spokenText.contains("Chapter 5"))
+    }
+
+    @Test
+    fun resolveReturnToAudioEdge_switchesSidesAndAutoHidesWhenReturningToPlayingPage() {
+        // Paginated PDF (LTR): audio on page 5
+        assertEquals(
+            ReturnToAudioEdge.LEFT,
+            resolveReturnToAudioEdge(
+                isPdf = true, isVerticalScroll = false, isRtl = false,
+                readerPageIndex = 7, readerStartChar = 0, readerEndChar = 0,
+                audioPageIndex = 5, audioCharOffset = 0
+            )
+        )
+        assertEquals(
+            ReturnToAudioEdge.RIGHT,
+            resolveReturnToAudioEdge(
+                isPdf = true, isVerticalScroll = false, isRtl = false,
+                readerPageIndex = 3, readerStartChar = 0, readerEndChar = 0,
+                audioPageIndex = 5, audioCharOffset = 0
+            )
+        )
+        // Manually swiped back to page 5 -> pill must hide (null)
+        assertNull(
+            resolveReturnToAudioEdge(
+                isPdf = true, isVerticalScroll = false, isRtl = false,
+                readerPageIndex = 5, readerStartChar = 0, readerEndChar = 0,
+                audioPageIndex = 5, audioCharOffset = 0
+            )
+        )
+
+        // Paginated RTL: earlier page is to the RIGHT, later page is to the LEFT
+        assertEquals(
+            ReturnToAudioEdge.RIGHT,
+            resolveReturnToAudioEdge(
+                isPdf = true, isVerticalScroll = false, isRtl = true,
+                readerPageIndex = 7, readerStartChar = 0, readerEndChar = 0,
+                audioPageIndex = 5, audioCharOffset = 0
+            )
+        )
+        assertEquals(
+            ReturnToAudioEdge.LEFT,
+            resolveReturnToAudioEdge(
+                isPdf = true, isVerticalScroll = false, isRtl = true,
+                readerPageIndex = 3, readerStartChar = 0, readerEndChar = 0,
+                audioPageIndex = 5, audioCharOffset = 0
+            )
+        )
+
+        // Scrolling EPUB: visible viewport [2000..2800]
+        assertEquals(
+            ReturnToAudioEdge.TOP,
+            resolveReturnToAudioEdge(
+                isPdf = false, isVerticalScroll = true, isRtl = false,
+                readerPageIndex = 0, readerStartChar = 2000, readerEndChar = 2800,
+                audioPageIndex = 0, audioCharOffset = 1500
+            )
+        )
+        assertEquals(
+            ReturnToAudioEdge.BOTTOM,
+            resolveReturnToAudioEdge(
+                isPdf = false, isVerticalScroll = true, isRtl = false,
+                readerPageIndex = 0, readerStartChar = 2000, readerEndChar = 2800,
+                audioPageIndex = 0, audioCharOffset = 3400
+            )
+        )
+        // Scrolled back onto the playing passage [2000..2800] -> pill hides (null)
+        assertNull(
+            resolveReturnToAudioEdge(
+                isPdf = false, isVerticalScroll = true, isRtl = false,
+                readerPageIndex = 0, readerStartChar = 2000, readerEndChar = 2800,
+                audioPageIndex = 0, audioCharOffset = 2350
+            )
+        )
     }
 }

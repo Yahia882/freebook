@@ -11,6 +11,7 @@ import com.example.freebook.ui.reader.buildAudiobookListRows
 import com.example.freebook.ui.reader.extractReorderedEntries
 import com.example.freebook.ui.reader.formatChapterDisplayTitle
 import com.example.freebook.ui.reader.formatChapterTimestamp
+import com.example.freebook.ui.reader.formatCompactDuration
 import com.example.freebook.ui.reader.initialRangeForMapping
 import com.example.freebook.ui.reader.moveRowInReorderList
 import com.example.freebook.ui.reader.resolveChapterRange
@@ -166,6 +167,10 @@ class AudiobookManagerLogicUnitTest {
         assertEquals("00:00", formatChapterTimestamp(0L))
         assertEquals("42:38", formatChapterTimestamp((42 * 60 + 38) * 1000L))
         assertEquals("01:14:35", formatChapterTimestamp((74 * 60 + 35) * 1000L))
+
+        assertEquals("31:00", formatCompactDuration(31 * 60 * 1000L))
+        assertEquals("4:05", formatCompactDuration((4 * 60 + 5) * 1000L))
+        assertEquals("1:20:00", formatCompactDuration(80 * 60 * 1000L))
 
         assertEquals("1 - Chapters 1 - 4", formatChapterDisplayTitle(1, "Chapters 1 - 4"))
         assertEquals("1 - Chapters 1 - 4", formatChapterDisplayTitle(1, "1 - Chapters 1 - 4"))

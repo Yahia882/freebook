@@ -484,14 +484,18 @@ class AudiobookRepository(
      * Adds or updates a 1-tap "Sync Here" calibration anchor inside [mappingId],
      * eliminating proportional sync drift without running AI.
      */
-    suspend fun addSyncAnchor(mappingId: String, anchor: SyncAnchor) = withContext(Dispatchers.IO) {
+    suspend fun addSyncAnchor(
+        mappingId: String,
+        anchor: SyncAnchor,
+        isPdf: Boolean = false
+    ) = withContext(Dispatchers.IO) {
         val existing = audiobookDao.getMappingById(mappingId)?.toDomainModel() ?: return@withContext
-        // Replace any anchor within 3 seconds of the new one to keep anchors clean and monotonic
-        val filtered = existing.anchors
-            .filterNot { kotlin.math.abs(it.audioMs - anchor.audioMs) < 3_000L }
-            .plus(anchor)
-            .sortedBy { it.audioMs }
-        audiobookDao.updateMappingAnchors(mappingId, SyncAnchor.serializeList(filtered))
+        val merged = SyncAnchor.mergeMonotonic(
+            existing = existing.anchors,
+            newAnchor = anchor,
+            isPdf = isPdf
+        )
+        audiobookDao.updateMappingAnchors(mappingId, SyncAnchor.serializeList(merged))
     }
 
     suspend fun clearSyncAnchors(mappingId: String) = withContext(Dispatchers.IO) {

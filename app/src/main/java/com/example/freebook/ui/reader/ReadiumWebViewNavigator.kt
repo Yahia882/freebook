@@ -249,7 +249,7 @@ class ReadiumWebViewNavigator : DecorableNavigator {
     )
     override val currentLocator: StateFlow<Locator> = _currentLocator.asStateFlow()
 
-    var onLocatorUpdated: ((charOffset: Int, currentPosition: Int, totalPositions: Int, visibleText: String) -> Unit)? = null
+    var onLocatorUpdated: ((charOffset: Int, endCharOffset: Int, currentPosition: Int, totalPositions: Int, visibleText: String) -> Unit)? = null
     var onSingleTapToggleHud: (() -> Unit)? = null
     var onInitialPositionRestored: (() -> Unit)? = null
     var onUserManualNavigation: (() -> Unit)? = null
@@ -629,6 +629,7 @@ class ReadiumWebViewNavigator : DecorableNavigator {
         @JavascriptInterface
         fun onLocatorChanged(
             charOffset: Int,
+            endCharOffset: Int,
             currentPosition: Int,
             totalPositions: Int,
             visibleText: String,
@@ -638,6 +639,7 @@ class ReadiumWebViewNavigator : DecorableNavigator {
                 val safePos = currentPosition.coerceAtLeast(1)
                 val safeTotal = totalPositions.coerceAtLeast(1)
                 val safeOffset = charOffset.coerceAtLeast(0)
+                val safeEndOffset = endCharOffset.coerceAtLeast(safeOffset)
                 val totalChars = totalCanonicalChars
                 val prog = when {
                     safeTotal > 1 && safePos >= safeTotal -> 1.0
@@ -661,6 +663,7 @@ class ReadiumWebViewNavigator : DecorableNavigator {
                 }
                 onLocatorUpdated?.invoke(
                     safeOffset,
+                    safeEndOffset,
                     safePos,
                     safeTotal,
                     visibleText
@@ -1477,6 +1480,7 @@ $publisherCssTag
             }
         }
 
+        var maxBlockEnd = firstOffset;
         for (var i = 0; i < paragraphs.length; i++) {
             var p = paragraphs[i];
             var r = p.getBoundingClientRect();
@@ -1491,7 +1495,29 @@ $publisherCssTag
                     firstOffset = getBlockStart(p);
                     foundFirst = true;
                 }
+                var be = getBlockEnd(p);
+                if (be > maxBlockEnd) maxBlockEnd = be;
                 visibleParts.push(p.dataset.rawText || p.textContent || "");
+            }
+        }
+
+        // Probe bottom edge of the viewport to get accurate page-end char offset even for multi-page paragraphs
+        var lastOffset = maxBlockEnd;
+        var bottomProbeXs = state.isRtl
+            ? [Math.min(winW - 12, rawMargin + 16), Math.round(winW * 0.5), Math.min(winW - 12, rawMargin + 48)]
+            : [Math.max(12, winW - rawMargin - 16), Math.round(winW * 0.5), Math.max(12, winW - rawMargin - 48)];
+        var bottomProbeYs = [Math.max(60, winH - 74), Math.max(60, winH - 108), Math.max(60, winH - 150)];
+        var foundBottom = false;
+        for (var bpy = 0; bpy < bottomProbeYs.length && !foundBottom; bpy++) {
+            for (var bpx = 0; bpx < bottomProbeXs.length && !foundBottom; bpx++) {
+                var bHit = resolveWordAtPoint(bottomProbeXs[bpx], bottomProbeYs[bpy]);
+                if (bHit && bHit.charOffset >= firstOffset) {
+                    var bEnd = Math.max(bHit.charOffset, bHit.endCharOffset || bHit.charOffset);
+                    if (maxBlockEnd <= firstOffset || bEnd <= maxBlockEnd + 64) {
+                        lastOffset = bEnd;
+                        foundBottom = true;
+                    }
+                }
             }
         }
 
@@ -1505,6 +1531,7 @@ $publisherCssTag
                     : (sr.bottom > 56 && sr.top < winH - 56);
                 if (secVisible) {
                     firstOffset = parseInt(sec.dataset.r2CanonStart || "0", 10) || 0;
+                    lastOffset = Math.max(firstOffset, parseInt(sec.dataset.r2CanonEnd || "0", 10) || firstOffset);
                     foundFirst = true;
                     break;
                 }
@@ -1513,6 +1540,7 @@ $publisherCssTag
 
         return {
             charOffset: firstOffset,
+            endCharOffset: Math.max(firstOffset, lastOffset),
             visibleText: visibleParts.join("\n\n").slice(0, 1200)
         };
     }
@@ -1529,6 +1557,7 @@ $publisherCssTag
         if (window.ReadiumBridge && window.ReadiumBridge.onLocatorChanged) {
             window.ReadiumBridge.onLocatorChanged(
                 state.currentCharOffset,
+                loc.endCharOffset,
                 posOneBased,
                 state.totalPages,
                 loc.visibleText,

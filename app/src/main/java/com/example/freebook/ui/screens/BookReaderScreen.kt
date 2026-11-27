@@ -341,6 +341,9 @@ fun BookReaderScreen(
     var currentCharOffset by rememberSaveable(book.id) {
         mutableIntStateOf(book.resolveSavedCharOffset(0))
     }
+    var currentVisibleEndCharOffset by remember(book.id) {
+        mutableIntStateOf(currentCharOffset)
+    }
     var derivedCurrentPosition by rememberSaveable(book.id) {
         mutableIntStateOf((book.currentPageIndex + 1).coerceAtLeast(1))
     }
@@ -533,16 +536,22 @@ fun BookReaderScreen(
         onInitialPositionRestored = {
             isInitialPositionRestored = true
         },
-        onLocatorUpdated = { offset, posOneBased, totalPos, visibleText ->
+        onLocatorUpdated = { offset, endOffset, posOneBased, totalPos, visibleText ->
             if (posOneBased != derivedCurrentPosition) {
                 tappedHighlightId = null
             }
             currentCharOffset = offset
+            currentVisibleEndCharOffset = endOffset.coerceAtLeast(offset)
             derivedCurrentPosition = posOneBased
             derivedTotalPositions = totalPos
             if (visibleText.isNotBlank()) {
                 currentVisibleText = visibleText
             }
+            audioState.onReaderViewportChanged(
+                pageIndex = 0,
+                startChar = offset,
+                endChar = currentVisibleEndCharOffset
+            )
             if (isInitialPositionRestored && latestTotalChars > 0) {
                 latestOnLocatorChanged(
                     offset,
@@ -818,7 +827,13 @@ fun BookReaderScreen(
                     derivedTotalPositions = totalPages
                     currentPdfProgressPercent = progressPercent
                     currentCharOffset = 0
+                    currentVisibleEndCharOffset = 0
                     currentVisibleText = "Page $pageNumber"
+                    audioState.onReaderViewportChanged(
+                        pageIndex = pageIndex,
+                        startChar = 0,
+                        endChar = 0
+                    )
                     latestOnLocatorChanged(
                         0,
                         1,
@@ -3128,7 +3143,7 @@ fun BookReaderScreen(
         }
 
         // =========================================================================
-        // FLOATING "RETURN TO AUDIO" PILL + TTS & AUDIOBOOK BOTTOM SHEETS
+        // FLOATING DIRECTIONAL STITCH "AUDIO" PILL + TTS & AUDIOBOOK BOTTOM SHEETS
         // =========================================================================
         ReaderAudioOverlaysAndSheets(
             book = book,
@@ -3136,10 +3151,17 @@ fun BookReaderScreen(
             audioDockMode = audioDockMode,
             currentPdfPageIndex = currentPdfPageIndex,
             currentCharOffset = currentCharOffset,
+            currentVisibleEndCharOffset = currentVisibleEndCharOffset,
             derivedTotalPositions = derivedTotalPositions,
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 62.dp)
+            navigationMode = preferences.navigationMode,
+            isRtlBook = if (book.layoutType == PublicationLayoutType.FIXED) {
+                pdfIsRtl
+            } else {
+                book.readingDirection == BookReadingDirection.RTL
+            },
+            isDarkReaderSurface = isDarkReaderSurface,
+            isReaderHudVisible = isActiveReaderHudVisible,
+            modifier = Modifier.fillMaxSize()
         )
 
         // =========================================================================
@@ -3208,7 +3230,7 @@ fun BookReaderScreen(
 private fun SideEffectOrUpdateNavigatorCallbacks(
     navigator: ReadiumWebViewNavigator,
     onInitialPositionRestored: () -> Unit,
-    onLocatorUpdated: (charOffset: Int, currentPosition: Int, totalPositions: Int, visibleText: String) -> Unit,
+    onLocatorUpdated: (charOffset: Int, endCharOffset: Int, currentPosition: Int, totalPositions: Int, visibleText: String) -> Unit,
     onSingleTapToggleHud: () -> Unit,
     onUserManualNavigation: () -> Unit = {},
     onWordDoubleTap: (charOffset: Int, wordText: String) -> Unit = { _, _ -> },
@@ -3225,8 +3247,8 @@ private fun SideEffectOrUpdateNavigatorCallbacks(
 
     DisposableEffect(navigator) {
         navigator.onInitialPositionRestored = { latestOnInitialRestored() }
-        navigator.onLocatorUpdated = { offset, pos, total, text ->
-            latestOnLocatorUpdated(offset, pos, total, text)
+        navigator.onLocatorUpdated = { offset, endOffset, pos, total, text ->
+            latestOnLocatorUpdated(offset, endOffset, pos, total, text)
         }
         navigator.onSingleTapToggleHud = { latestOnSingleTap() }
         navigator.onUserManualNavigation = { latestOnManualNav() }

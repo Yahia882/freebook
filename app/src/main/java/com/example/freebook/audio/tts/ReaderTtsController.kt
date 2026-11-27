@@ -93,6 +93,9 @@ class ReaderTtsController(
     private var smoothedWordDurationMs: Long = 220L
     private var highlightSequence: Long = 0L
     private var lastAutoFollowedPageIndex: Int = -1
+    private var lastReaderPageIndex: Int = -1
+    private var lastReaderStartChar: Int = -1
+    private var lastReaderEndChar: Int = -1
     private var lastProgrammaticJumpMs: Long = 0L
 
     // Exact paused anchor so Play resumes on the exact paused word
@@ -266,6 +269,43 @@ class ReaderTtsController(
                 isUserDetachedFromSync = true,
                 activeHighlight = it.activeHighlight?.copy(shouldAutoFollow = false)
             )
+        }
+    }
+
+    /**
+     * Called whenever the reader's visible page/character range changes.
+     * Automatically clears detached state & hides the return pill when the user manually
+     * swipes or scrolls back onto the page where TTS is currently speaking/paused.
+     */
+    fun onReaderViewportChanged(pageIndex: Int, startChar: Int, endChar: Int) {
+        lastReaderPageIndex = pageIndex
+        lastReaderStartChar = startChar
+        lastReaderEndChar = endChar.coerceAtLeast(startChar)
+
+        val book = activeBook ?: return
+        val state = _uiState.value
+        if (state.isOff || !state.isUserDetachedFromSync) return
+        if (!state.isPlaying && !state.isPaused) return
+
+        val ttsPage = state.activeHighlight?.pageIndex
+            ?: if (hasPausedAnchor) pausedPageIndex else state.liveTtsPageIndex
+        val ttsChar = state.activeHighlight?.startCharOffset
+            ?: if (hasPausedAnchor) pausedCharOffset else state.liveTtsCharOffset
+
+        val isVisible = if (book.isPdf) {
+            ttsPage >= 0 && pageIndex >= 0 && ttsPage == pageIndex
+        } else {
+            ttsChar >= 0 && startChar >= 0 &&
+                ttsChar in (startChar - 12)..(maxOf(lastReaderEndChar, startChar + 1) + 12)
+        }
+        if (isVisible) {
+            lastAutoFollowedPageIndex = ttsPage
+            _uiState.update {
+                it.copy(
+                    isUserDetachedFromSync = false,
+                    activeHighlight = it.activeHighlight?.copy(shouldAutoFollow = !it.isPaused)
+                )
+            }
         }
     }
 
@@ -875,7 +915,15 @@ class ReaderTtsController(
         val safeEnd = endInSpoken.coerceIn(safeStart, chunk.spokenText.length)
         val wordText = chunk.spokenText.substring(safeStart, safeEnd)
 
-        val shouldFollow = forceScroll || (!_uiState.value.isUserDetachedFromSync && !isPaused)
+        val wasDetached = _uiState.value.isUserDetachedFromSync
+        val caughtUpToViewport = wasDetached && if (book.isPdf) {
+            chunk.pageIndex >= 0 && lastReaderPageIndex >= 0 && chunk.pageIndex == lastReaderPageIndex
+        } else {
+            mapped.first >= 0 && lastReaderStartChar >= 0 &&
+                mapped.first in (lastReaderStartChar - 12)..(maxOf(lastReaderEndChar, lastReaderStartChar + 1) + 12)
+        }
+        val isStillDetached = wasDetached && !caughtUpToViewport
+        val shouldFollow = forceScroll || (!isStillDetached && !isPaused)
 
         val hl = ActiveWordHighlight(
             source = ActiveHighlightSource.TTS,
@@ -899,7 +947,14 @@ class ReaderTtsController(
             lastProgrammaticJumpMs = System.currentTimeMillis()
         }
 
-        _uiState.update { it.copy(activeHighlight = hl) }
+        _uiState.update {
+            it.copy(
+                activeHighlight = hl,
+                liveTtsPageIndex = hl.pageIndex,
+                liveTtsCharOffset = hl.startCharOffset,
+                isUserDetachedFromSync = if (caughtUpToViewport) false else it.isUserDetachedFromSync
+            )
+        }
         book.seekToPosition(
             SyncTarget(
                 pageIndex = hl.pageIndex,

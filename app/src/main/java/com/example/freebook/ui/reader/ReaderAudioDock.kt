@@ -13,12 +13,15 @@ import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
@@ -32,11 +35,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
@@ -62,6 +69,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -84,13 +92,17 @@ import com.example.freebook.model.AlignmentProvider
 import com.example.freebook.model.AudiobookUiState
 import com.example.freebook.model.Book
 import com.example.freebook.model.PublicationLayoutType
+import com.example.freebook.model.ReaderNavigationMode
 import com.example.freebook.model.TtsEngineIds
 import com.example.freebook.model.TtsUiState
 import com.example.freebook.ui.components.AudioWaveformIcon
 import com.example.freebook.ui.components.ChapterListIcon
+import com.example.freebook.ui.components.ChevronDirection
 import com.example.freebook.ui.components.CircularSkipArrowIcon
+import com.example.freebook.ui.components.DirectionChevronIcon
 import com.example.freebook.ui.components.PauseBarsIcon
 import com.example.freebook.ui.components.PlayTriangleIcon
+import com.example.freebook.ui.components.SkipSecondsIcon
 import com.example.freebook.ui.components.SleepTimerIcon
 import com.example.freebook.ui.components.SwapHorizArrowsIcon
 import com.example.freebook.ui.theme.LocalBookFreePalette
@@ -130,6 +142,19 @@ class ReaderAudioStateHolder(
     fun onUserManuallyNavigatedBook(fromExplicitJump: Boolean = false) {
         ttsController.onUserManuallyNavigated(fromExplicitJump = fromExplicitJump)
         audiobookController.onUserManuallyScrolledBook(fromExplicitJump = fromExplicitJump)
+    }
+
+    fun onReaderViewportChanged(pageIndex: Int, startChar: Int, endChar: Int) {
+        ttsController.onReaderViewportChanged(
+            pageIndex = pageIndex,
+            startChar = startChar,
+            endChar = endChar
+        )
+        audiobookController.onReaderViewportChanged(
+            pageIndex = pageIndex,
+            startChar = startChar,
+            endChar = endChar
+        )
     }
 
     /**
@@ -769,15 +794,32 @@ private fun ExpandedAudioDockContent(
     val leftTimeText = if (isTtsMode) ttsState.currentTimeLabel else AudiobookSyncController.formatMs(audiobookState.currentPositionMs)
     val rightTimeText = if (isTtsMode) ttsState.remainingTimeLabel else AudiobookSyncController.formatMs(audiobookState.totalDurationMs)
     val speedVal = if (isTtsMode) ttsState.speechRate else audiobookState.playbackSpeed
-    val speedCompactLabel = if (speedVal % 1f == 0f) "${speedVal.toInt()}x" else "${speedVal}x"
+    val speedCompactLabel = if (speedVal % 1f == 0f) "${speedVal.toInt()}.0x" else "${speedVal}x"
     val timerActive = if (isTtsMode) ttsState.sleepTimerRemainingMs != null else audiobookState.sleepTimerRemainingMs != null
     val fillWeight = liveFraction.coerceIn(0.001f, 0.999f)
     val remWeight = (1f - fillWeight).coerceAtLeast(0.001f)
+    val activeTrackTitle = remember(audiobookState.activeTrackId, audiobookState.tracks) {
+        val active = audiobookState.tracks.firstOrNull { it.id == audiobookState.activeTrackId }
+            ?: audiobookState.tracks.firstOrNull()
+        active?.title?.takeIf { it.isNotBlank() }
+    }
+    val squircleShape = RoundedCornerShape(14.dp)
 
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        // Subtle centered mode title right beneath the drag handle
+        Text(
+            text = if (isTtsMode) "TTS" else "Audiobook",
+            fontSize = 13.5.sp,
+            fontWeight = FontWeight.Medium,
+            color = palette.textMuted,
+            maxLines = 1,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+
+        // Slim scrubber track with crisp circular thumb
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -802,7 +844,7 @@ private fun ExpandedAudioDockContent(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(4.dp)
+                    .height(3.5.dp)
                     .clip(CircleShape)
                     .background(
                         if (palette.isDark) Color.White.copy(alpha = 0.22f)
@@ -816,15 +858,14 @@ private fun ExpandedAudioDockContent(
                 Box(
                     modifier = Modifier
                         .weight(fillWeight)
-                        .height(4.dp)
+                        .height(3.5.dp)
                         .clip(CircleShape)
                         .background(palette.textPrimary)
                 )
                 Box(
                     modifier = Modifier
-                        .width(24.dp)
-                        .height(14.dp)
-                        .shadow(2.dp, CircleShape)
+                        .size(14.dp)
+                        .shadow(3.dp, CircleShape)
                         .clip(CircleShape)
                         .background(palette.textPrimary)
                 )
@@ -888,7 +929,11 @@ private fun ExpandedAudioDockContent(
                     },
                 contentAlignment = Alignment.Center
             ) {
-                CircularSkipArrowIcon(forward = false, color = palette.textPrimary, size = 28.dp)
+                if (isTtsMode) {
+                    CircularSkipArrowIcon(forward = false, color = palette.textPrimary, size = 28.dp)
+                } else {
+                    SkipSecondsIcon(seconds = 15, forward = false, color = palette.textPrimary, size = 30.dp)
+                }
             }
 
             Box(
@@ -923,20 +968,24 @@ private fun ExpandedAudioDockContent(
                     },
                 contentAlignment = Alignment.Center
             ) {
-                CircularSkipArrowIcon(forward = true, color = palette.textPrimary, size = 28.dp)
+                if (isTtsMode) {
+                    CircularSkipArrowIcon(forward = true, color = palette.textPrimary, size = 28.dp)
+                } else {
+                    SkipSecondsIcon(seconds = 15, forward = true, color = palette.textPrimary, size = 30.dp)
+                }
             }
 
             Box(
                 modifier = Modifier
-                    .size(width = 44.dp, height = 38.dp)
+                    .size(width = 48.dp, height = 38.dp)
                     .clip(CircleShape)
                     .clickable { audioState.setShowSpeedSheet(true) },
                 contentAlignment = Alignment.Center
             ) {
                 Text(
                     text = speedCompactLabel,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Medium,
+                    fontSize = 14.5.sp,
+                    fontWeight = FontWeight.SemiBold,
                     color = palette.textPrimary,
                     style = TextStyle(fontFeatureSettings = "tnum"),
                     maxLines = 1
@@ -957,126 +1006,152 @@ private fun ExpandedAudioDockContent(
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 if (mode == ReaderAudioDockMode.TTS) {
-                    Column(
-                        modifier = Modifier
-                            .weight(1.9f)
-                            .height(44.dp)
-                            .clip(CircleShape)
-                            .background(dockButtonFill)
-                            .border(1.dp, dockButtonBorder, CircleShape)
-                            .clickable { audioState.setShowTtsModelSheet(true) }
-                            .padding(horizontal = 10.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text(
-                            text = "Model",
-                            fontSize = 12.5.sp,
-                            lineHeight = 14.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = palette.textPrimary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = "(${ttsState.selectedModelName})",
-                            fontSize = 11.sp,
-                            lineHeight = 13.sp,
-                            color = if (ttsState.isOff) palette.textMuted else Color(0xFF38BDF8),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                        Column(
+                            modifier = Modifier
+                                .weight(1f, fill = false)
+                                .widthIn(min = 78.dp)
+                                .height(46.dp)
+                                .clip(squircleShape)
+                                .background(dockButtonFill)
+                                .border(1.dp, dockButtonBorder, squircleShape)
+                                .clickable { audioState.setShowTtsModelSheet(true) }
+                                .padding(horizontal = 12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = "Model",
+                                fontSize = 13.sp,
+                                lineHeight = 14.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = palette.textPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "(${ttsState.selectedModelName})",
+                                fontSize = 11.5.sp,
+                                lineHeight = 13.sp,
+                                color = palette.textMuted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
 
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(44.dp)
-                            .clip(CircleShape)
-                            .background(dockButtonFill)
-                            .border(1.dp, dockButtonBorder, CircleShape)
-                            .clickable { audioState.setShowTtsVoiceSheet(true) }
-                            .padding(horizontal = 6.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Text(
-                            text = "Voice",
-                            fontSize = 12.5.sp,
-                            lineHeight = 14.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = palette.textPrimary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = "(${ttsState.selectedVoice?.shortName ?: if (ttsState.isOff) "Off" else "Auto"})",
-                            fontSize = 11.sp,
-                            lineHeight = 13.sp,
-                            color = palette.textMuted,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Column(
+                            modifier = Modifier
+                                .weight(1f, fill = false)
+                                .widthIn(min = 76.dp)
+                                .height(46.dp)
+                                .clip(squircleShape)
+                                .background(dockButtonFill)
+                                .border(1.dp, dockButtonBorder, squircleShape)
+                                .clickable { audioState.setShowTtsVoiceSheet(true) }
+                                .padding(horizontal = 12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = "Voice",
+                                fontSize = 13.sp,
+                                lineHeight = 14.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = palette.textPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "(${ttsState.selectedVoice?.shortName ?: if (ttsState.isOff) "Off" else "Auto"})",
+                                fontSize = 11.5.sp,
+                                lineHeight = 13.sp,
+                                color = palette.textMuted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
                 } else {
-                    Row(
-                        modifier = Modifier
-                            .weight(1.9f)
-                            .height(44.dp)
-                            .clip(CircleShape)
-                            .background(dockButtonFill)
-                            .border(1.dp, dockButtonBorder, CircleShape)
-                            .clickable { audioState.setShowAudiobookManagerSheet(true) }
-                            .padding(horizontal = 11.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
-                    ) {
-                        ChapterListIcon(color = palette.textPrimary, size = 14.dp)
-                        Text(
-                            text = if (audiobookState.hasAudio) {
-                                "Audiobook (${audiobookState.tracks.size})"
-                            } else {
-                                "Audiobook"
-                            },
-                            fontSize = 12.5.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = palette.textPrimary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-
+                    // Book / Chapters squircle showing active chapter + vertical divider + chapter list icon
                     Row(
                         modifier = Modifier
                             .weight(1f)
-                            .height(44.dp)
-                            .clip(CircleShape)
+                            .height(46.dp)
+                            .clip(squircleShape)
                             .background(dockButtonFill)
-                            .border(1.dp, dockButtonBorder, CircleShape)
-                            .clickable(onClick = onTriggerClip)
-                            .padding(horizontal = 6.dp),
+                            .border(1.dp, dockButtonBorder, squircleShape)
+                            .clickable { audioState.setShowAudiobookManagerSheet(true) }
+                            .padding(horizontal = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterHorizontally)
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        AudioWaveformIcon(color = palette.textPrimary, size = 14.dp)
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = "Chapters",
+                                fontSize = 13.sp,
+                                lineHeight = 14.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = palette.textPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = activeTrackTitle ?: "Import audio",
+                                fontSize = 11.5.sp,
+                                lineHeight = 13.sp,
+                                color = palette.textMuted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .width(1.dp)
+                                .height(22.dp)
+                                .background(dockBorderColor)
+                        )
+
+                        ChapterListIcon(color = palette.textPrimary, size = 16.dp)
+                    }
+
+                    // Clip squircle
+                    Row(
+                        modifier = Modifier
+                            .height(46.dp)
+                            .clip(squircleShape)
+                            .background(dockButtonFill)
+                            .border(1.dp, dockButtonBorder, squircleShape)
+                            .clickable(onClick = onTriggerClip)
+                            .padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        AudioWaveformIcon(color = palette.textPrimary, size = 15.dp)
                         Text(
                             text = "Clip",
-                            fontSize = 12.5.sp,
-                            fontWeight = FontWeight.Medium,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
                             color = palette.textPrimary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            maxLines = 1
                         )
                     }
                 }
 
+                // Distinct full-capsule mode toggle pill on the far right
                 Row(
                     modifier = Modifier
-                        .weight(1f)
-                        .height(44.dp)
+                        .height(42.dp)
                         .clip(CircleShape)
                         .background(togglePillFill)
                         .border(1.dp, dockButtonBorder, CircleShape)
@@ -1089,24 +1164,68 @@ private fun ExpandedAudioDockContent(
                                 }
                             )
                         }
-                        .padding(horizontal = 6.dp),
+                        .padding(horizontal = 14.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterHorizontally)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     SwapHorizArrowsIcon(color = palette.textPrimary, size = 14.dp)
                     Text(
                         text = if (mode == ReaderAudioDockMode.TTS) "Audio" else "TTS",
-                        fontSize = 12.5.sp,
-                        fontWeight = FontWeight.Medium,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
                         color = palette.textPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        maxLines = 1
                     )
                 }
             }
         }
 
         Spacer(modifier = Modifier.height(2.dp))
+    }
+}
+
+enum class ReturnToAudioEdge {
+    LEFT,
+    RIGHT,
+    TOP,
+    BOTTOM
+}
+
+/**
+ * Determines whether the currently playing audio/TTS position is already visible on the user's
+ * screen (`null` -> hide the return pill) or which screen edge / arrow direction the pill should take.
+ */
+internal fun resolveReturnToAudioEdge(
+    isPdf: Boolean,
+    isVerticalScroll: Boolean,
+    isRtl: Boolean,
+    readerPageIndex: Int,
+    readerStartChar: Int,
+    readerEndChar: Int,
+    audioPageIndex: Int,
+    audioCharOffset: Int
+): ReturnToAudioEdge? {
+    val fallbackEdge = when {
+        isVerticalScroll -> ReturnToAudioEdge.TOP
+        isRtl -> ReturnToAudioEdge.RIGHT
+        else -> ReturnToAudioEdge.LEFT
+    }
+
+    val audioIsBefore: Boolean = if (isPdf) {
+        if (audioPageIndex < 0 || readerPageIndex < 0) return fallbackEdge
+        if (audioPageIndex == readerPageIndex) return null
+        audioPageIndex < readerPageIndex
+    } else {
+        if (audioCharOffset < 0 || readerStartChar < 0) return fallbackEdge
+        val safeEnd = maxOf(readerEndChar, readerStartChar + 1)
+        if (audioCharOffset in (readerStartChar - 12)..(safeEnd + 12)) return null
+        audioCharOffset < readerStartChar
+    }
+
+    return when {
+        isVerticalScroll -> if (audioIsBefore) ReturnToAudioEdge.TOP else ReturnToAudioEdge.BOTTOM
+        isRtl -> if (audioIsBefore) ReturnToAudioEdge.RIGHT else ReturnToAudioEdge.LEFT
+        else -> if (audioIsBefore) ReturnToAudioEdge.LEFT else ReturnToAudioEdge.RIGHT
     }
 }
 
@@ -1117,11 +1236,15 @@ fun ReaderAudioOverlaysAndSheets(
     audioDockMode: ReaderAudioDockMode,
     currentPdfPageIndex: Int,
     currentCharOffset: Int,
+    currentVisibleEndCharOffset: Int,
     derivedTotalPositions: Int,
+    navigationMode: ReaderNavigationMode,
+    isRtlBook: Boolean,
+    isDarkReaderSurface: Boolean,
+    isReaderHudVisible: Boolean,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val palette = LocalBookFreePalette.current
     val coroutineScope = rememberCoroutineScope()
     var pendingImportTargetGroupId by remember { mutableStateOf<String?>(null) }
 
@@ -1170,88 +1293,131 @@ fun ReaderAudioOverlaysAndSheets(
         }
     }
 
-    val showTtsDetachedPill = !audioState.ttsState.isOff &&
+    val isPdfBook = book.layoutType == PublicationLayoutType.FIXED
+    val isVerticalScroll = navigationMode == ReaderNavigationMode.VERTICAL_SCROLL
+
+    val isTtsDetached = !audioState.ttsState.isOff &&
         (audioState.ttsState.isPlaying || audioState.ttsState.isPaused) &&
         audioState.ttsState.isUserDetachedFromSync
-    val showAudiobookDetachedPill = !showTtsDetachedPill &&
+    val isAudiobookDetached = !isTtsDetached &&
         audioState.audiobookState.isPlaying &&
         audioState.audiobookState.isUserDetachedFromSync
 
-    AnimatedVisibility(
-        visible = showTtsDetachedPill || showAudiobookDetachedPill,
-        enter = fadeIn(tween(180)) + slideInVertically { -it / 2 },
-        exit = fadeOut(tween(150)) + slideOutVertically { -it / 2 },
-        modifier = modifier
-    ) {
-        Surface(
-            shape = CircleShape,
-            color = palette.menuSurface,
-            shadowElevation = 10.dp,
-            modifier = Modifier
-                .border(1.dp, Color(0xFF38BDF8).copy(alpha = 0.55f), CircleShape)
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .clickable {
-                            if (showTtsDetachedPill) {
-                                audioState.ttsController.reattachFollowSync()
-                            } else {
-                                audioState.audiobookController.reattachSyncToAudio()
-                            }
-                        }
-                        .padding(horizontal = 10.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(7.dp)
-                ) {
-                    AudioWaveformIcon(color = Color(0xFF38BDF8), size = 14.dp)
-                    Text(
-                        text = if (showTtsDetachedPill) "Return to TTS" else "Return to Audio",
-                        fontSize = 12.5.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = palette.textPrimary
-                    )
-                }
+    val playingPageIndex = if (isTtsDetached) {
+        audioState.ttsState.activeHighlight?.pageIndex ?: audioState.ttsState.liveTtsPageIndex
+    } else {
+        audioState.audiobookState.liveAudioPageIndex
+    }
+    val playingCharOffset = if (isTtsDetached) {
+        audioState.ttsState.activeHighlight?.startCharOffset ?: audioState.ttsState.liveTtsCharOffset
+    } else {
+        audioState.audiobookState.liveAudioCharOffset
+    }
 
-                val canJumpHere = showTtsDetachedPill ||
-                    audioState.audiobookController.hasMappingForPosition(currentPdfPageIndex, currentCharOffset)
-                if (canJumpHere) {
-                    Box(
-                        modifier = Modifier
-                            .width(1.dp)
-                            .height(16.dp)
-                            .background(palette.borderSubtle)
-                    )
-                    Text(
-                        text = if (showTtsDetachedPill) "Read Here" else "Play Here",
-                        fontSize = 12.5.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color(0xFF38BDF8),
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .clickable {
-                                if (showTtsDetachedPill) {
-                                    audioState.ttsController.jumpToWordAndPlay(
-                                        pageIndex = currentPdfPageIndex,
-                                        charOffset = currentCharOffset
-                                    )
-                                } else {
-                                    audioState.audiobookController.seekAudioToBookPosition(
-                                        pageIndex = currentPdfPageIndex,
-                                        charOffset = currentCharOffset,
-                                        startPlaying = true
-                                    )
-                                }
-                            }
-                            .padding(horizontal = 10.dp, vertical = 5.dp)
-                    )
-                }
-            }
+    val activeReturnEdge: ReturnToAudioEdge? = if (isTtsDetached || isAudiobookDetached) {
+        resolveReturnToAudioEdge(
+            isPdf = isPdfBook,
+            isVerticalScroll = isVerticalScroll,
+            isRtl = isRtlBook,
+            readerPageIndex = currentPdfPageIndex,
+            readerStartChar = currentCharOffset,
+            readerEndChar = currentVisibleEndCharOffset,
+            audioPageIndex = playingPageIndex,
+            audioCharOffset = playingCharOffset
+        )
+    } else {
+        null
+    }
+
+    val pillLabel = if (isTtsDetached) "TTS" else "Audio"
+    val onReturnToAudioClick: () -> Unit = {
+        if (isTtsDetached) {
+            audioState.ttsController.reattachFollowSync()
+        } else {
+            audioState.audiobookController.reattachSyncToAudio()
+        }
+    }
+
+    val topScrollPad by animateDpAsState(
+        targetValue = if (isReaderHudVisible) 76.dp else 44.dp,
+        animationSpec = tween(durationMillis = 200),
+        label = "stitch_pill_top_pad"
+    )
+    val bottomScrollPad by animateDpAsState(
+        targetValue = if (isReaderHudVisible) 136.dp else 44.dp,
+        animationSpec = tween(durationMillis = 200),
+        label = "stitch_pill_bottom_pad"
+    )
+
+    Box(modifier = modifier.fillMaxSize()) {
+        // Paginated LEFT edge (< Audio)
+        AnimatedVisibility(
+            visible = activeReturnEdge == ReturnToAudioEdge.LEFT,
+            enter = fadeIn(tween(180)) + slideInHorizontally(tween(200)) { -it },
+            exit = fadeOut(tween(140)) + slideOutHorizontally(tween(160)) { -it },
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .padding(start = 8.dp)
+        ) {
+            StitchReturnToAudioPill(
+                edge = ReturnToAudioEdge.LEFT,
+                label = pillLabel,
+                isDarkSurface = isDarkReaderSurface,
+                onClick = onReturnToAudioClick
+            )
+        }
+
+        // Paginated RIGHT edge (Audio >)
+        AnimatedVisibility(
+            visible = activeReturnEdge == ReturnToAudioEdge.RIGHT,
+            enter = fadeIn(tween(180)) + slideInHorizontally(tween(200)) { it },
+            exit = fadeOut(tween(140)) + slideOutHorizontally(tween(160)) { it },
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 8.dp)
+        ) {
+            StitchReturnToAudioPill(
+                edge = ReturnToAudioEdge.RIGHT,
+                label = pillLabel,
+                isDarkSurface = isDarkReaderSurface,
+                onClick = onReturnToAudioClick
+            )
+        }
+
+        // Scrolling TOP edge (^ / Audio)
+        AnimatedVisibility(
+            visible = activeReturnEdge == ReturnToAudioEdge.TOP,
+            enter = fadeIn(tween(180)) + slideInVertically(tween(200)) { -it },
+            exit = fadeOut(tween(140)) + slideOutVertically(tween(160)) { -it },
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(top = topScrollPad)
+        ) {
+            StitchReturnToAudioPill(
+                edge = ReturnToAudioEdge.TOP,
+                label = pillLabel,
+                isDarkSurface = isDarkReaderSurface,
+                onClick = onReturnToAudioClick
+            )
+        }
+
+        // Scrolling BOTTOM edge (Audio / v)
+        AnimatedVisibility(
+            visible = activeReturnEdge == ReturnToAudioEdge.BOTTOM,
+            enter = fadeIn(tween(180)) + slideInVertically(tween(200)) { it },
+            exit = fadeOut(tween(140)) + slideOutVertically(tween(160)) { it },
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(bottom = bottomScrollPad)
+        ) {
+            StitchReturnToAudioPill(
+                edge = ReturnToAudioEdge.BOTTOM,
+                label = pillLabel,
+                isDarkSurface = isDarkReaderSurface,
+                onClick = onReturnToAudioClick
+            )
         }
     }
 
@@ -1448,5 +1614,136 @@ fun ReaderAudioOverlaysAndSheets(
             },
             onDismiss = { audioState.setShowAudiobookManagerSheet(false) }
         )
+    }
+}
+
+/**
+ * Minimalist directional pill modeled directly on the Stitch Normal & Scrolling Reader designs:
+ * - Paginated (`LEFT` / `RIGHT`): horizontal frosted capsule (`< Audio` / `Audio >`)
+ * - Scrolling (`TOP` / `BOTTOM`): vertical stacked frosted capsule (`^` above `Audio` / `Audio` above `v`)
+ */
+@Composable
+private fun StitchReturnToAudioPill(
+    edge: ReturnToAudioEdge,
+    label: String,
+    isDarkSurface: Boolean,
+    onClick: () -> Unit
+) {
+    val pillBg = if (isDarkSurface) {
+        Color.White.copy(alpha = 0.86f)
+    } else {
+        Color(0xFF141416).copy(alpha = 0.86f)
+    }
+    val pillBorder = if (isDarkSurface) {
+        Color.White.copy(alpha = 0.42f)
+    } else {
+        Color.White.copy(alpha = 0.16f)
+    }
+    val pillContentColor = if (isDarkSurface) {
+        Color(0xFF0A0A0C)
+    } else {
+        Color.White
+    }
+
+    Surface(
+        shape = CircleShape,
+        color = pillBg,
+        shadowElevation = 8.dp,
+        modifier = Modifier
+            .border(1.dp, pillBorder, CircleShape)
+            .clip(CircleShape)
+            .clickable(onClick = onClick)
+    ) {
+        when (edge) {
+            ReturnToAudioEdge.LEFT -> {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    DirectionChevronIcon(
+                        direction = ChevronDirection.LEFT,
+                        color = pillContentColor,
+                        size = 15.dp
+                    )
+                    Text(
+                        text = label,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = (-0.2).sp,
+                        color = pillContentColor,
+                        style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false))
+                    )
+                }
+            }
+
+            ReturnToAudioEdge.RIGHT -> {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Text(
+                        text = label,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = (-0.2).sp,
+                        color = pillContentColor,
+                        style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false))
+                    )
+                    DirectionChevronIcon(
+                        direction = ChevronDirection.RIGHT,
+                        color = pillContentColor,
+                        size = 15.dp
+                    )
+                }
+            }
+
+            ReturnToAudioEdge.TOP -> {
+                Column(
+                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 9.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    DirectionChevronIcon(
+                        direction = ChevronDirection.UP,
+                        color = pillContentColor,
+                        size = 15.dp
+                    )
+                    Text(
+                        text = label,
+                        fontSize = 11.sp,
+                        lineHeight = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = (-0.2).sp,
+                        color = pillContentColor,
+                        style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false))
+                    )
+                }
+            }
+
+            ReturnToAudioEdge.BOTTOM -> {
+                Column(
+                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 9.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    Text(
+                        text = label,
+                        fontSize = 11.sp,
+                        lineHeight = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = (-0.2).sp,
+                        color = pillContentColor,
+                        style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false))
+                    )
+                    DirectionChevronIcon(
+                        direction = ChevronDirection.DOWN,
+                        color = pillContentColor,
+                        size = 15.dp
+                    )
+                }
+            }
+        }
     }
 }

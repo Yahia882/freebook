@@ -74,8 +74,23 @@ internal fun formatChapterDisplayTitle(chapterNumber: Int, rawTitle: String): St
 }
 
 /**
- * Formats timestamps matching the clean Apple Books / Chapters style:
- * `00:00`, `42:38`, `01:14:35`.
+ * Formats timestamps cleanly for compact inline display beside chapter and category titles:
+ * e.g. `31:00`, `4:05`, `1:20:00`.
+ */
+internal fun formatCompactDuration(ms: Long): String {
+    val totalSec = (ms / 1000L).coerceAtLeast(0L)
+    val hrs = totalSec / 3600L
+    val mins = (totalSec % 3600L) / 60L
+    val secs = totalSec % 60L
+    return if (hrs > 0L) {
+        String.format(Locale.US, "%d:%02d:%02d", hrs, mins, secs)
+    } else {
+        String.format(Locale.US, "%d:%02d", mins, secs)
+    }
+}
+
+/**
+ * Formats timestamps matching zero-padded `MM:SS` / `HH:MM:SS` notation.
  */
 internal fun formatChapterTimestamp(ms: Long): String {
     val totalSec = (ms / 1000L).coerceAtLeast(0L)

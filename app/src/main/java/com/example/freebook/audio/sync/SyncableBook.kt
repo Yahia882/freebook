@@ -64,11 +64,27 @@ class ChapterWeightDistribution(
         for (i in segmentPositions.indices) {
             if (segmentPositions[i] <= charOffset) bestIdx = i else break
         }
-        return if (bestIdx == 0) 0 else cumulativeWeights[bestIdx - 1]
+        val prevW = if (bestIdx == 0) 0 else cumulativeWeights[bestIdx - 1]
+        val segEndW = cumulativeWeights[bestIdx]
+        val segW = (segEndW - prevW).coerceAtLeast(0)
+        if (segW == 0) return prevW
+
+        val segStart = segmentPositions[bestIdx]
+        val segEnd = if (bestIdx + 1 < segmentPositions.size) {
+            segmentPositions[bestIdx + 1]
+        } else {
+            endCharOffset.coerceAtLeast(segStart + 1)
+        }
+        val spanChars = (segEnd - segStart).coerceAtLeast(1)
+        val frac = ((charOffset - segStart).toDouble() / spanChars.toDouble()).coerceIn(0.0, 1.0)
+        val maxInSeg = if (bestIdx + 1 < segmentPositions.size) (segEndW - 1).coerceAtLeast(prevW) else segEndW
+        return (prevW + (frac * segW).toInt()).coerceIn(prevW, maxInSeg)
     }
 
     /**
      * Resolves a target cumulative weight `[0..totalWeight]` into a `(pageIndex, charOffset)` pair.
+     * Uses upper-bound comparison (`<=`) so the start weight of segment `i` (`cumulativeWeights[i - 1]`)
+     * resolves directly to segment `i` rather than off-by-one back to segment `i - 1`.
      */
     fun resolveWeightToPosition(targetWeight: Int): Pair<Int, Int> {
         if (segmentPositions.isEmpty()) {
@@ -79,17 +95,27 @@ class ChapterWeightDistribution(
         var hi = cumulativeWeights.lastIndex
         while (lo < hi) {
             val mid = (lo + hi) ushr 1
-            if (cumulativeWeights[mid] < clamped) {
+            if (cumulativeWeights[mid] <= clamped) {
                 lo = mid + 1
             } else {
                 hi = mid
             }
         }
-        return if (isPdf) {
-            segmentPositions[lo] to 0
-        } else {
-            0 to segmentPositions[lo]
+        if (isPdf) {
+            return segmentPositions[lo] to 0
         }
+        val prevW = if (lo == 0) 0 else cumulativeWeights[lo - 1]
+        val segW = (cumulativeWeights[lo] - prevW).coerceAtLeast(1)
+        val frac = ((clamped - prevW).toDouble() / segW.toDouble()).coerceIn(0.0, 1.0)
+        val segStart = segmentPositions[lo]
+        val segEnd = if (lo + 1 < segmentPositions.size) {
+            segmentPositions[lo + 1]
+        } else {
+            endCharOffset.coerceAtLeast(segStart + 1)
+        }
+        val maxChar = (endCharOffset - 1).coerceAtLeast(startCharOffset)
+        val resolvedChar = (segStart + (frac * (segEnd - segStart)).toInt()).coerceIn(startCharOffset, maxChar)
+        return 0 to resolvedChar
     }
 }
 
